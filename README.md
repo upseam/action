@@ -1,12 +1,18 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/upseam-banner-dark.svg" />
+    <img src=".github/assets/upseam-banner-light.svg" width="880" alt="Upseam. Dependabot for your APIs." />
+  </picture>
+</p>
+
 # Upseam Action
 
-Finds the external API changes that affect your repository and writes a report
-to the run page: the deadlines first, then each finding as a link to the line in
-the scanned commit with the named successor, then the behavior changes that need
-you. It covers Stripe, Shopify, and the models of OpenAI, Anthropic and Gemini.
+[**Try for free ↗**](https://app.upseam.dev) · [Docs](https://docs.upseam.dev/) · [Demo](https://github.com/upseam/demo) · [Vote for the next API](https://app.upseam.dev/vote) ·
+[Privacy](https://docs.upseam.dev/privacy/) · [Security](https://docs.upseam.dev/security/)
 
-The free report needs the `contents: read` right. No App, no account, no model
-and no token.
+- Finds the external API changes that affect your repository and writes a report to the run page.
+- Covers Stripe, Shopify (Admin and Storefront APIs) and the models of OpenAI, Anthropic and Gemini, in JavaScript, TypeScript and Python: [Providers](https://docs.upseam.dev/providers/).
+- The free report needs only `contents: read`. No App, account, model or token.
 
 ## Free report on the run page
 
@@ -28,68 +34,19 @@ jobs:
       - uses: upseam/action@v0
 ```
 
-Every run appends a Markdown summary to the run page:
+- **Deadlines** first: the date with a countdown, the API and what changes.
+- **Changes to make:** each finding as `file:line`, linked to the line in the scanned commit, with the successor the change data names.
+- **Needs you:** the behavior changes. Upseam does not patch them.
+- A **coverage line** says what was and was not checked, also when nothing is found.
+- GitHub shows at most 1 MiB per step; a longer summary is cut at a whole finding and says how many were left out.
 
-- **API changes affecting this repository** is the heading.
-- **Deadlines** come first: the date with a countdown, the API, and what changes.
-- **Changes to make** lists each finding as `file:line`, linked to the line in
-  the scanned commit, with the successor the change data names.
-- **Needs you** lists the behavior changes. Upseam does not patch them.
-- A **coverage line** says what was checked and what was not. When nothing is
-  found, the summary says so, with that line.
+## Issue and `fix`
 
-GitHub shows at most 1 MiB per step, so a longer summary is cut at a whole
-finding and says how many were left out.
-
-## Keep one issue
-
-```yaml
-permissions:
-  contents: read
-  issues: write
-concurrency: upseam
-# …
-      - uses: upseam/action@v0
-        with:
-          issue: true
-```
-
-The issue **Upseam watches this repository** is created when missing and edited
-only when the findings change. A closed issue is updated but never reopened.
-Text from your repository is escaped, so the issue pings no one.
-
-## Patch pull requests with `fix`
-
-For a breaking change that is mechanical, `fix` sends the change and the matched
-files to your model and opens one pull request per run with the result. Behavior
-changes are never patched. The reply must pass the same gates as the Upseam App
-before anything is written.
-
-```yaml
-permissions:
-  contents: write
-  issues: write
-  pull-requests: write
-# …
-      - uses: upseam/action@<40-character commit SHA> # v0.x
-        with:
-          issue: true
-          fix: true
-          model-key: ${{ secrets.ANTHROPIC_API_KEY }}
-```
-
-- `fix` needs your own model key as a repository secret: `ANTHROPIC_API_KEY` or
-  `OPENAI_API_KEY`. Pass it with `model-key`; a key in the step `env` reaches
-  every step of the Action.
-- `fix` needs `contents: write` and `pull-requests: write` on the token. `issues:
-write` is needed only with `issue: true`.
-- Pin the Action to a full commit SHA in this mode: the step holds your key and
-  pushes.
-- `vendor` is `anthropic` (default) or `openai`; `base-url` points `openai` at
-  any OpenAI-compatible API. `model` defaults to `claude-opus-5-5` for
-  `anthropic` and is required for `openai`.
-- `verify` is refused. Run your tests in your pull request workflow with
-  `contents: read`.
+- `issue: true` keeps one issue, **Upseam watches this repository**: created when missing, edited only when the findings change, updated but never reopened when closed. Text from your repository is escaped, so it pings no one. Add `concurrency: upseam` to the job.
+- `fix: true` sends a mechanical breaking change and the matched files to your model and opens one pull request per run. Behavior changes are never patched; the reply passes the same gates as the Upseam App first.
+- `fix` needs your own model key as a repository secret, `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`, passed with `model-key`. A key in the step `env` reaches every step of the Action.
+- With `fix`, pin the Action to a full commit SHA (`upseam/action@<40-character commit SHA> # v0.x`): the step holds your key and pushes. `verify` is refused; run your tests in your pull request workflow with `contents: read`.
+- **Permissions:** the free report needs `contents: read`; `issue: true` adds `issues: write`; `fix: true` needs `contents: write` and `pull-requests: write`, plus `issues: write` only with `issue: true`.
 
 ## Inputs
 
@@ -110,34 +67,14 @@ write` is needed only with `issue: true`.
 
 ## What leaves the runner
 
-- **Free report:** nothing. The detector runs on the runner with the change data
-  bundled in the Action, and no token is passed to the step. The only network
-  use is `actions/setup-node`, which may download Node.js 22 to the runner.
-- **`issue: true`:** calls to the GitHub API of your own repository with `token`
-  to read, create and edit the issue.
-- **`fix: true`:** GitHub API calls with `token` to look up existing pull
-  requests, push one branch and open a pull request, and calls to
-  the model vendor you chose, with your key. The calls carry the change and the
-  matched source files, with likely secrets in them replaced by placeholders
-  first ([Secrets in your files](https://docs.upseam.dev/security/#secrets-in-your-files)).
-  The key goes only to that vendor and is never printed or written.
+- **Free report:** nothing. The detector runs on the runner with the change data bundled in the Action; no token is passed to the step. Only `actions/setup-node` may download Node.js 22.
+- **`issue: true`:** GitHub API calls to your own repository with `token`, to read, create and edit the issue.
+- **`fix: true`:** GitHub API calls with `token` to look up pull requests, push one branch and open one, and calls to your model vendor with your key. They carry the change and the matched files, with likely secrets replaced first: [Secrets in your files](https://docs.upseam.dev/security/#secrets-in-your-files). The key goes only to that vendor and is never printed or written.
+- The Action sends nothing to Upseam servers.
 
-The Action sends nothing to Upseam servers.
+## More
 
-## Use with the Upseam App or your own agent
-
-The `group`, `agent-edits` and `check-only` inputs serve the
-[Upseam GitHub App](https://docs.upseam.dev/): it sends a `repository_dispatch`
-event, and the Action writes the patch with your model or your own coding
-agent and pushes `upseam/<group>`. The reusable workflow
-`.github/workflows/agent.yml` of this repository runs your agent; see
-[Bring your own agent](https://docs.upseam.dev/own-agent/).
-
-## Support
-
-- Documentation: <https://docs.upseam.dev/>, including
-  [Run Upseam without the App](https://docs.upseam.dev/without-the-app/)
-- Privacy: <https://docs.upseam.dev/privacy/>
-- Security model: <https://docs.upseam.dev/security/>
-- Report a vulnerability privately: <contact@upseam.dev>. Do not open a public
-  issue for it.
+- `group`, `agent-edits` and `check-only` serve the Upseam GitHub App: on its `repository_dispatch` event the Action writes the patch with your model or coding agent and pushes `upseam/<group>`.
+- The reusable workflow `.github/workflows/agent.yml` runs your agent: [Bring your own agent](https://docs.upseam.dev/own-agent/).
+- No App at all: [Run Upseam without the App](https://docs.upseam.dev/without-the-app/).
+- Report a vulnerability privately to <contact@upseam.dev>, not in a public issue.
