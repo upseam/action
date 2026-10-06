@@ -1,0 +1,148 @@
+name: Upseam
+description: Finds external API changes that affect this repository and writes a report of the SDKs, API versions and affected lines to the run summary; optionally keeps one issue up to date.
+author: Upseam
+branding:
+  icon: eye
+  color: blue
+inputs:
+  path:
+    description: Directory to scan, relative to the workspace. It must be inside a checkout of this repository.
+    default: .
+  issue:
+    description: Set to true to also keep one issue, "Upseam watches this repository", up to date. Needs issues write on the token. Without it the Action writes only the run summary and needs only contents read.
+    default: "false"
+  token:
+    description: Token used only with issue or fix. With issue it must be able to write issues of this repository; with fix, also contents and pull requests. The run summary needs no token.
+    default: ${{ github.token }}
+  fix:
+    description: Set to true to open one pull request per run for a breaking mechanical change, written by your model. Needs the model key in the step env (ANTHROPIC_API_KEY or OPENAI_API_KEY).
+    default: "false"
+  vendor:
+    description: Model vendor for fix, anthropic or openai (any OpenAI-compatible API with base-url). Default anthropic.
+    default: ""
+  model:
+    description: Model id as the vendor names it. Default claude-opus-5-5 for anthropic; required for openai.
+    default: ""
+  base-url:
+    description: API base URL for an OpenAI-compatible vendor.
+    default: ""
+  verify:
+    description: Refused. With fix, a non-empty value fails the run before anything is generated; run your tests in your pull request workflow with contents read only. Kept so that existing configurations fail loudly.
+    default: ""
+  model-key:
+    description: Model key for fix, passed only to the generate step. Preferred to the step env, which every step of the Action inherits.
+    default: ""
+  group:
+    description: Group key to patch for the Upseam App. Default the group of an upseam-generate or upseam-agent repository_dispatch event, empty on any other event. When set, the action only writes the patch with your model (or takes your own agent's edits, see agent-edits), checks it with the Upseam gates and pushes upseam/<group>; the App opens the pull request.
+    default: ${{ github.event_name == 'repository_dispatch' && (github.event.action == 'upseam-generate' || github.event.action == 'upseam-agent') && github.event.client_payload.group || '' }}
+  agent-edits:
+    description: With group, take the patch from the edits of your own coding agent in the checkout instead of calling a model; only edits of existing regular files are accepted, and nothing is pushed unless the Upseam gates pass. Default true on an upseam-agent repository_dispatch event.
+    default: ${{ github.event_name == 'repository_dispatch' && github.event.action == 'upseam-agent' }}
+  check-only:
+    description: With group, check the patch with the Upseam gates without committing or pushing; the step fails when the gates reject. When they pass, the step copies the files listed in the event's client_payload.files from the checkout to $RUNNER_TEMP/upseam-edits, outside the workspace, for the agent job of the upseam-agent workflow to upload.
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+      with:
+        node-version: 22
+        package-manager-cache: false
+    - name: Report
+      if: inputs.group == ''
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.issue == 'true' && inputs.token || '' }}
+        UPSEAM_MAIN: ${{ github.action_path }}/dist/upseam.mjs
+        UPSEAM_PATH: ${{ inputs.path }}
+        UPSEAM_ISSUE: ${{ inputs.issue }}
+      run: |
+        args=(report "$UPSEAM_PATH" --summary "$GITHUB_STEP_SUMMARY")
+        if [ "$UPSEAM_ISSUE" = "true" ]; then
+          args+=(--github "$GITHUB_REPOSITORY")
+        else
+          args+=(--repo "$GITHUB_REPOSITORY")
+        fi
+        bash "$GITHUB_ACTION_PATH/quiet.sh" node "$UPSEAM_MAIN" "${args[@]}"
+    - name: Fix - refuse verify
+      if: inputs.fix == 'true' && inputs.group == '' && inputs.verify != ''
+      shell: bash
+      run: |
+        echo "::error::The verify input is refused: in the job that pushes, a verify command could change PATH or the environment of later steps through the runner's file commands, rewrite the Action's own files, or use sudo, and so reach the token. Leave verify empty and run your tests in your usual pull request workflow with contents: read. See docs/usage/action.md#patch-pull-requests."
+        exit 1
+    - name: Fix - existing pull requests
+      id: pulls
+      if: inputs.fix == 'true' && inputs.group == '' && inputs.verify == ''
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.token }}
+        UPSEAM_MAIN: ${{ github.action_path }}/dist/upseam.mjs
+        UPSEAM_PATH: ${{ inputs.path }}
+      run: |
+        dir=$(mktemp -d "$RUNNER_TEMP/upseam-fix.XXXXXX")
+        bash "$GITHUB_ACTION_PATH/quiet.sh" node "$UPSEAM_MAIN" fix "$UPSEAM_PATH" --github "$GITHUB_REPOSITORY" --pulls "$dir/pulls.json"
+        echo "dir=$dir" >> "$GITHUB_OUTPUT"
+    - name: Fix - generate
+      id: generate
+      if: inputs.fix == 'true' && inputs.group == '' && inputs.verify == ''
+      shell: bash
+      env:
+        UPSEAM_MAIN: ${{ github.action_path }}/dist/upseam.mjs
+        UPSEAM_PATH: ${{ inputs.path }}
+        UPSEAM_VENDOR: ${{ inputs.vendor }}
+        UPSEAM_MODEL: ${{ inputs.model }}
+        UPSEAM_BASE_URL: ${{ inputs.base-url }}
+        UPSEAM_MODEL_KEY: ${{ inputs.model-key }}
+        UPSEAM_DIR: ${{ steps.pulls.outputs.dir }}
+      run: |
+        bash "$GITHUB_ACTION_PATH/quiet.sh" node "$UPSEAM_MAIN" fix "$UPSEAM_PATH" --github "$GITHUB_REPOSITORY" --stage "$UPSEAM_DIR/stage" --skip "$UPSEAM_DIR/pulls.json"
+        if [ -f "$UPSEAM_DIR/stage/manifest.json" ]; then
+          echo "manifest=$(sha256sum "$UPSEAM_DIR/stage/manifest.json" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+        fi
+    - name: Fix - publish
+      if: inputs.fix == 'true' && inputs.group == '' && inputs.verify == '' && steps.generate.outputs.manifest != ''
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.token }}
+        UPSEAM_MAIN: ${{ github.action_path }}/dist/upseam.mjs
+        UPSEAM_PATH: ${{ inputs.path }}
+        UPSEAM_DIR: ${{ steps.pulls.outputs.dir }}
+        UPSEAM_MANIFEST: ${{ steps.generate.outputs.manifest }}
+      run: bash "$GITHUB_ACTION_PATH/quiet.sh" node "$UPSEAM_MAIN" fix "$UPSEAM_PATH" --github "$GITHUB_REPOSITORY" --publish "$UPSEAM_DIR/stage" --manifest "$UPSEAM_MANIFEST"
+    - name: Generate for the Upseam App
+      if: inputs.group != ''
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.token }}
+        UPSEAM_MAIN: ${{ github.action_path }}/dist/upseam.mjs
+        UPSEAM_PATH: ${{ inputs.path }}
+        UPSEAM_VENDOR: ${{ inputs.vendor }}
+        UPSEAM_MODEL: ${{ inputs.model }}
+        UPSEAM_BASE_URL: ${{ inputs.base-url }}
+        UPSEAM_GROUP: ${{ inputs.group }}
+        UPSEAM_MODEL_KEY: ${{ inputs.model-key }}
+        UPSEAM_SHA: ${{ github.event.client_payload.sha }}
+        UPSEAM_HEAD: ${{ github.event.client_payload.head }}
+        UPSEAM_AGENT_EDITS: ${{ inputs.agent-edits }}
+        UPSEAM_CHECK_ONLY: ${{ inputs.check-only }}
+        UPSEAM_FILES: ${{ toJSON(github.event.client_payload.files) }}
+        UPSEAM_DISPATCH: ${{ github.event.client_payload.input }}
+      run: |
+        args=(fix "$UPSEAM_PATH" --github "$GITHUB_REPOSITORY" --group "$UPSEAM_GROUP" --sha "$UPSEAM_SHA")
+        if [ -n "$UPSEAM_HEAD" ]; then args+=(--head "$UPSEAM_HEAD"); fi
+        if [ "$UPSEAM_AGENT_EDITS" = "true" ]; then args+=(--edits "$UPSEAM_DISPATCH"); fi
+        if [ "$UPSEAM_CHECK_ONLY" = "true" ]; then args+=(--dry-run); fi
+        bash "$GITHUB_ACTION_PATH/quiet.sh" node "$UPSEAM_MAIN" "${args[@]}"
+        if [ "$UPSEAM_CHECK_ONLY" = "true" ]; then
+          out="$RUNNER_TEMP/upseam-edits"
+          rm -rf "$out"
+          mkdir -p "$out"
+          while IFS= read -r -d '' f; do
+            case "$f" in "" | /* | ../* | */../* | */.. | .git/* | */.git/*) echo "::error::Bad path in files."; exit 1 ;; esac
+            src="$UPSEAM_PATH/$f"
+            if [ -f "$src" ] && [ ! -L "$src" ]; then
+              mkdir -p "$out/$(dirname -- "$f")"
+              cp -- "$src" "$out/$f"
+            fi
+          done < <(jq -j '.[] | ., "\u0000"' <<<"$UPSEAM_FILES")
+        fi
