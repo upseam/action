@@ -1,9 +1,9 @@
 # Banner licences
 
-`upseam-banner-light.svg` and `upseam-banner-dark.svg` contain two kinds of material.
+`upseam-banner-light.svg`, `upseam-banner-dark.svg`, `upseam-summary-light.svg` and `upseam-summary-dark.svg` contain two kinds of material.
 
 - **The cat.** The pixel cat is Upseam's own art, the same sprite as the landing hero (`apps/landing/web/src/sections/hero/cat.png` in `upseam/platform`). It is covered by the licence of this repository.
-- **The text.** The wordmark, the tagline and the glyph background are converted to outlines from Geist and Geist Mono, Copyright (c) 2023 Vercel, in collaboration with basement.studio, https://github.com/vercel/geist-font. Both fonts are under the SIL Open Font License 1.1.
+- **The text.** The wordmark, the tagline, the "Summary" label and the glyph background are converted to outlines from Geist and Geist Mono, Copyright (c) 2023 Vercel, in collaboration with basement.studio, https://github.com/vercel/geist-font. Both fonts are under the SIL Open Font License 1.1.
 
 The full licence text follows.
 

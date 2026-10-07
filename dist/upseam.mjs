@@ -223701,6 +223701,25 @@ var init_countdown = __esm({
   }
 });
 
+// packages/core/dist/src/render/banner.js
+function summaryBanner({ version: version2 }) {
+  const base = `${ASSETS}/v${version2}/.github/assets/upseam-summary`;
+  return [
+    "<picture>",
+    `  <source media="(prefers-color-scheme: dark)" srcset="${base}-dark.svg">`,
+    `  <img src="${base}-light.svg" alt="Upseam summary" width="880">`,
+    "</picture>",
+    ""
+  ];
+}
+var ASSETS;
+var init_banner = __esm({
+  "packages/core/dist/src/render/banner.js"() {
+    "use strict";
+    ASSETS = "https://raw.githubusercontent.com/upseam/action";
+  }
+});
+
 // packages/core/dist/src/render/summary.js
 function findingsOf(results) {
   return results.flatMap((result) => {
@@ -223794,7 +223813,10 @@ function fitted(blocks, budget) {
 function renderSummary(results, coverage2, commit, options2 = {}) {
   const found = findingsOf(results);
   const checked2 = coverageLine(coverage2, found.length);
-  const head = [`## ${SUMMARY_HEADING}`];
+  const head = [
+    ...options2.banner ? summaryBanner(options2.banner) : [],
+    `## ${SUMMARY_HEADING}`
+  ];
   const foot = ["", checked2, "", NEXT_STEP];
   if (found.length === 0)
     return [
@@ -223819,6 +223841,7 @@ var init_summary = __esm({
     "use strict";
     init_src4();
     init_confidence();
+    init_banner();
     init_countdown();
     init_coverage();
     init_issue();
@@ -223833,6 +223856,16 @@ var init_summary = __esm({
   }
 });
 
+// packages/core/dist/src/render/dashboard-progress.js
+var init_dashboard_progress = __esm({
+  "packages/core/dist/src/render/dashboard-progress.js"() {
+    "use strict";
+    init_capability();
+    init_group();
+    init_issue();
+  }
+});
+
 // packages/core/dist/src/render/dashboard.js
 var init_dashboard = __esm({
   "packages/core/dist/src/render/dashboard.js"() {
@@ -223841,6 +223874,7 @@ var init_dashboard = __esm({
     init_capability();
     init_group();
     init_coverage();
+    init_dashboard_progress();
     init_issue();
     init_lifecycle2();
     init_text();
@@ -223893,6 +223927,7 @@ var init_src5 = __esm({
     init_coverage();
     init_summary();
     init_dashboard();
+    init_dashboard_progress();
     init_group();
     init_issue();
     init_pull();
@@ -225613,6 +225648,54 @@ var init_cli = __esm({
   }
 });
 
+// packages/cli/dist/package.json
+var package_default;
+var init_package = __esm({
+  "packages/cli/dist/package.json"() {
+    package_default = {
+      name: "@upseam/cli",
+      version: "0.2.1",
+      description: "Finds external API changes that affect a repository: SDK, pinned API version, changes since, matched code",
+      license: "MIT",
+      type: "module",
+      engines: {
+        node: ">=22"
+      },
+      bin: {
+        upseam: "upseam.mjs"
+      },
+      files: [
+        "upseam.mjs",
+        "THIRD-PARTY-LICENSES.txt",
+        "LICENSE"
+      ],
+      publishConfig: {
+        access: "public",
+        provenance: true
+      },
+      devDependencies: {
+        "@upseam/changes": "0.1.0",
+        "@upseam/config": "0.1.0",
+        "@upseam/core": "0.1.0",
+        "@upseam/models": "0.1.0",
+        "@upseam/providers": "0.1.0",
+        "@upseam/scan": "0.1.0",
+        yaml: "2.9.1"
+      }
+    };
+  }
+});
+
+// packages/cli/dist/src/version.js
+var VERSION3;
+var init_version = __esm({
+  "packages/cli/dist/src/version.js"() {
+    "use strict";
+    init_package();
+    VERSION3 = package_default.version;
+  }
+});
+
 // packages/cli/dist/src/term/heading.js
 function heading2(p, title, width, count) {
   const head = `  ${p.bold(title)}${count === void 0 ? "" : `  ${p.dim(String(count))}`}`;
@@ -225720,7 +225803,8 @@ var init_human2 = __esm({
 import { appendFileSync } from "node:fs";
 import { resolve as resolve8 } from "node:path";
 function writeSummary(target2, results, covered, commit) {
-  const summary4 = renderSummary(results, covered, commit);
+  const banner2 = target2 === process.env.GITHUB_STEP_SUMMARY ? { version: VERSION3 } : void 0;
+  const summary4 = renderSummary(results, covered, commit, { banner: banner2 });
   if (target2 !== STDOUT) {
     appendFileSync(target2, `${summary4}
 `);
@@ -225791,6 +225875,7 @@ var init_report = __esm({
     "use strict";
     init_src5();
     init_src4();
+    init_version();
     init_github();
     init_failure();
     init_progress();
@@ -225916,7 +226001,7 @@ function splash(p, out, version2, clock) {
   });
 }
 var LOGO, TAGLINE, SPLASH, LOGO_WIDTH, SPARK, GAP2, TYPE_FROM;
-var init_banner = __esm({
+var init_banner2 = __esm({
   "packages/cli/dist/src/term/banner.js"() {
     "use strict";
     init_motion();
@@ -225928,54 +226013,6 @@ var init_banner = __esm({
     SPARK = "\u2591";
     GAP2 = "   ";
     TYPE_FROM = 0.4;
-  }
-});
-
-// packages/cli/dist/package.json
-var package_default;
-var init_package = __esm({
-  "packages/cli/dist/package.json"() {
-    package_default = {
-      name: "@upseam/cli",
-      version: "0.2.0",
-      description: "Finds external API changes that affect a repository: SDK, pinned API version, changes since, matched code",
-      license: "MIT",
-      type: "module",
-      engines: {
-        node: ">=22"
-      },
-      bin: {
-        upseam: "upseam.mjs"
-      },
-      files: [
-        "upseam.mjs",
-        "THIRD-PARTY-LICENSES.txt",
-        "LICENSE"
-      ],
-      publishConfig: {
-        access: "public",
-        provenance: true
-      },
-      devDependencies: {
-        "@upseam/changes": "0.1.0",
-        "@upseam/config": "0.1.0",
-        "@upseam/core": "0.1.0",
-        "@upseam/models": "0.1.0",
-        "@upseam/providers": "0.1.0",
-        "@upseam/scan": "0.1.0",
-        yaml: "2.9.1"
-      }
-    };
-  }
-});
-
-// packages/cli/dist/src/version.js
-var VERSION3;
-var init_version = __esm({
-  "packages/cli/dist/src/version.js"() {
-    "use strict";
-    init_package();
-    VERSION3 = package_default.version;
   }
 });
 
@@ -226046,7 +226083,7 @@ var init_usage = __esm({
   "packages/cli/dist/src/usage.js"() {
     "use strict";
     init_src5();
-    init_banner();
+    init_banner2();
     init_failure();
     init_heading();
     init_motion();
