@@ -105,7 +105,7 @@ jobs:
               cp -- "$f" ".upseam-check/$f"
             fi
           done < <(jq -j '.[] | ., "\u0000"' <<<"$FILES")
-      - uses: upseam/action@<40-character SHA> # v0.x, after the first release
+      - uses: upseam/action@9a5db6caf401019ede8d24e7f951cb6c60543cd3 # v0.2.1
         with:
           path: .upseam-check
           check-only: true
@@ -152,7 +152,7 @@ jobs:
               cp -- "$f" ".upseam-check/$f"
             fi
           done < <(jq -j '.[] | ., "\u0000"' <<<"$FILES")
-      - uses: upseam/action@<40-character SHA> # v0.x, after the first release
+      - uses: upseam/action@9a5db6caf401019ede8d24e7f951cb6c60543cd3 # v0.2.1
         with:
           path: .upseam-check
           check-only: true
@@ -231,7 +231,7 @@ jobs:
               cp -- "$f" ".upseam-check/$f"
             fi
           done < <(jq -j '.[] | ., "\u0000"' <<<"$FILES")
-      - uses: upseam/action@<40-character SHA> # v0.x, after the first release
+      - uses: upseam/action@9a5db6caf401019ede8d24e7f951cb6c60543cd3 # v0.2.1
         with:
           path: .upseam-check
           check-only: true
@@ -391,7 +391,7 @@ jobs:
               cp -- "$work/$f" ".upseam-check/$f"
             fi
           done < <(jq -j '.[] | ., "\u0000"' <<<"$FILES")
-      - uses: upseam/action@<40-character SHA> # v0.x, after the first release
+      - uses: upseam/action@9a5db6caf401019ede8d24e7f951cb6c60543cd3 # v0.2.1
         with:
           path: .upseam-check
           check-only: true
@@ -575,7 +575,7 @@ jobs:
               cp -- "$work/$f" ".upseam-check/$f"
             fi
           done < <(jq -j '.[] | ., "\u0000"' <<<"$FILES")
-      - uses: upseam/action@<40-character SHA> # v0.x, after the first release
+      - uses: upseam/action@9a5db6caf401019ede8d24e7f951cb6c60543cd3 # v0.2.1
         with:
           path: .upseam-check
           check-only: true
@@ -615,4 +615,4 @@ jobs:
               cp -- "$src/$f" "$f"
             fi
           done < <(jq -j '.[] | ., "\u0000"' <<<"$FILES")
-      - uses: upseam/action@<40-character SHA> # v0.x, after the first release
+      - uses: upseam/action@9a5db6caf401019ede8d24e7f951cb6c60543cd3 # v0.2.1
