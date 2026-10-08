@@ -15,7 +15,7 @@ inputs:
     description: Token used only with issue or fix. With issue it must be able to write issues of this repository; with fix, also contents and pull requests. The run summary needs no token.
     default: ${{ github.token }}
   fix:
-    description: Set to true to open one pull request per run for a breaking mechanical change, written by your model. Needs the model key in the step env (ANTHROPIC_API_KEY or OPENAI_API_KEY).
+    description: Set to true to open one pull request per run for a breaking mechanical change. A retired model id with exactly one replacement named by the vendor is replaced directly, with no model and no model key; any other change is written by your model and needs model-key (or ANTHROPIC_API_KEY or OPENAI_API_KEY in the step env).
     default: "false"
   vendor:
     description: Model vendor for fix, anthropic or openai (any OpenAI-compatible API with base-url). Default anthropic.
@@ -30,7 +30,7 @@ inputs:
     description: Refused. With fix, a non-empty value fails the run before anything is generated; run your tests in your pull request workflow with contents read only. Kept so that existing configurations fail loudly.
     default: ""
   model-key:
-    description: Model key for fix, passed only to the generate step. Preferred to the step env, which every step of the Action inherits.
+    description: Model key for fix, passed only to the generate step. Not needed for a direct model replacement named by the vendor; without it, changes that need a model are skipped. Preferred to the step env, which every step of the Action inherits.
     default: ""
   group:
     description: Group key to patch for the Upseam App. Default the group of an upseam-generate or upseam-agent repository_dispatch event, empty on any other event. When set, the action only writes the patch with your model (or takes your own agent's edits, see agent-edits), checks it with the Upseam gates and pushes upseam/<group>; the App opens the pull request.

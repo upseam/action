@@ -597,7 +597,7 @@ function walkFiles(repoPath2) {
 }
 function readTree(repoPath2) {
   const { files, unread } = walkFiles(repoPath2);
-  const sources = [];
+  const sources2 = [];
   let large = 0;
   for (const path2 of files) {
     try {
@@ -605,7 +605,7 @@ function readTree(repoPath2) {
         large++;
         continue;
       }
-      sources.push({
+      sources2.push({
         file: relative(repoPath2, path2).split("\\").join("/"),
         text: readFileSync2(path2, "utf8")
       });
@@ -613,7 +613,7 @@ function readTree(repoPath2) {
       continue;
     }
   }
-  return { sources, unread: { ...unread, large } };
+  return { sources: sources2, unread: { ...unread, large } };
 }
 function readSources(repoPath2) {
   return readTree(repoPath2).sources;
@@ -989,8 +989,8 @@ function pinsIn(rule, source, scope) {
   }
   return pins;
 }
-function findPins(rule, format, sources) {
-  const code2 = sources.filter((source) => !TEST_FILE.test(source.file));
+function findPins(rule, format, sources2) {
+  const code2 = sources2.filter((source) => !TEST_FILE.test(source.file));
   const constantsByFile = /* @__PURE__ */ new Map();
   for (const source of code2) {
     const constants2 = versionConstants(source, format);
@@ -1319,7 +1319,7 @@ function need(pattern, alternatives2) {
     needs.set(pattern, alternatives2);
   return pattern;
 }
-function lineIndex(sources, wanted2, limit = MAX_POSTINGS) {
+function lineIndex(sources2, wanted2, limit = MAX_POSTINGS) {
   const index3 = {
     files: [],
     source: [],
@@ -1328,7 +1328,7 @@ function lineIndex(sources, wanted2, limit = MAX_POSTINGS) {
     postings: new Map([...wanted2].map((t) => [t, []]))
   };
   let count = 0;
-  sources.forEach(({ file, lines: lines2, skip }, s) => {
+  sources2.forEach(({ file, lines: lines2, skip }, s) => {
     index3.files.push(file);
     for (let i = 0; i < lines2.length; i++) {
       const text2 = lines2[i].trim();
@@ -1401,11 +1401,11 @@ function capitalize(word3) {
 function wordsOf(name) {
   return name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().split(/[-_]/).filter((word3) => word3.length > 0);
 }
-function pascal(words2) {
-  return words2.map(capitalize).join("");
+function pascal(words3) {
+  return words3.map(capitalize).join("");
 }
-function camel(words2) {
-  return words2[0] + pascal(words2.slice(1));
+function camel(words3) {
+  return words3[0] + pascal(words3.slice(1));
 }
 function singular(noun2) {
   if (noun2.endsWith("ies"))
@@ -1435,15 +1435,15 @@ function alternatives(forms) {
   return `(?:${forms.map(escapeRegExp).join("|")})`;
 }
 function namespace(name) {
-  const words2 = wordsOf(name);
-  const forms = [words2.join("_"), camel(words2), pascal(words2)];
+  const words3 = wordsOf(name);
+  const forms = [words3.join("_"), camel(words3), pascal(words3)];
   return `\\$?\\w*${alternatives([...new Set(forms)])}\\w*`;
 }
 function resourceForms(name) {
-  const words2 = wordsOf(name);
-  const last2 = words2.length - 1;
-  const one = words2.map((word3, i) => i === last2 ? singular(word3) : word3);
-  const many = words2.map((word3, i) => i === last2 ? plural(word3) : word3);
+  const words3 = wordsOf(name);
+  const last2 = words3.length - 1;
+  const one = words3.map((word3, i) => i === last2 ? singular(word3) : word3);
+  const many = words3.map((word3, i) => i === last2 ? plural(word3) : word3);
   return [.../* @__PURE__ */ new Set([pascal(one), camel(many), many.join("_")])];
 }
 function methodCall(owner, method) {
@@ -1842,6 +1842,9 @@ var init_judge = __esm({
 });
 
 // packages/providers/dist/src/collection.js
+function collectorHeaders(extra2 = {}) {
+  return { ...extra2, "User-Agent": USER_AGENT };
+}
 async function readLimited(response, max, url) {
   const declared = Number(response.headers.get("content-length") ?? "0");
   if (declared > max)
@@ -1866,11 +1869,39 @@ async function readLimited(response, max, url) {
 }
 async function fetchText(fetch2, url, max = MAX_TEXT_BYTES) {
   const response = await fetch2(url, {
-    headers: USER_AGENT,
+    headers: collectorHeaders(),
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
   });
   if (!response.ok)
     throw new Error(`${response.status} ${url}`);
+  return readLimited(response, max, url);
+}
+function validatorOf(response) {
+  const etag = response.headers.get("etag") ?? void 0;
+  const lastModified = response.headers.get("last-modified") ?? void 0;
+  return etag || lastModified ? { etag, lastModified } : null;
+}
+function conditionalHeaders(validator) {
+  return collectorHeaders({
+    ...validator?.etag && { "If-None-Match": validator.etag },
+    ...validator?.lastModified && {
+      "If-Modified-Since": validator.lastModified
+    }
+  });
+}
+async function fetchIfChanged({ fetch: fetch2, validators }, url, max = MAX_TEXT_BYTES) {
+  const known = validators && await validators.get(url);
+  const response = await fetch2(url, {
+    headers: conditionalHeaders(known),
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
+  });
+  if (response.status === 304 && known)
+    return null;
+  if (!response.ok)
+    throw new Error(`${response.status} ${url}`);
+  const fresh = validatorOf(response);
+  if (fresh)
+    await validators?.set(url, fresh);
   return readLimited(response, max, url);
 }
 function uniqueIds(events) {
@@ -1886,13 +1917,104 @@ function uniqueIds(events) {
       event.id = `${event.id}-${n}`;
   }
 }
-var USER_AGENT, MAX_TEXT_BYTES, FETCH_TIMEOUT_MS;
+var COLLECTOR_VERSION, USER_AGENT, MAX_TEXT_BYTES, FETCH_TIMEOUT_MS;
 var init_collection = __esm({
   "packages/providers/dist/src/collection.js"() {
     "use strict";
-    USER_AGENT = { "User-Agent": "upseam" };
+    COLLECTOR_VERSION = "0.1.0";
+    USER_AGENT = `upseam-collector/${COLLECTOR_VERSION} (+https://github.com/upseam/upseam)`;
     MAX_TEXT_BYTES = 64 * 1024 * 1024;
     FETCH_TIMEOUT_MS = 12e4;
+  }
+});
+
+// packages/providers/dist/src/refresh.js
+import { createHash } from "node:crypto";
+function daysBefore(today, days) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(today))
+    return "";
+  const date = /* @__PURE__ */ new Date(`${today}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() - days);
+  return date.toISOString().slice(0, 10);
+}
+function due(url, hour) {
+  if (hour === void 0)
+    return false;
+  const digest = createHash("sha256").update(url).digest();
+  return digest.readUInt32BE(0) % HOURS === hour;
+}
+function judgedPages(stored) {
+  const byPage = /* @__PURE__ */ new Map();
+  for (const event of stored)
+    byPage.set(event.changelog, byPage.has(event.changelog) ? null : event);
+  const out = /* @__PURE__ */ new Map();
+  for (const [page, event] of byPage)
+    if (event?.judgments) {
+      const { judgments: _, ...rest2 } = event;
+      out.set(page, rest2);
+    }
+  return out;
+}
+var RECENT_DAYS, HOURS;
+var init_refresh = __esm({
+  "packages/providers/dist/src/refresh.js"() {
+    "use strict";
+    RECENT_DAYS = 60;
+    HOURS = 24;
+  }
+});
+
+// packages/providers/dist/src/deprecations/history.js
+function keepHistory(stored, fresh, carryVersion) {
+  const before = /* @__PURE__ */ new Map();
+  for (const event of stored)
+    for (const id of event.symbols)
+      before.set(key(event, id), event);
+  const now = new Set(fresh.flatMap((e) => e.symbols.map((id) => key(e, id))));
+  const notes = [];
+  const current = fresh.map((event) => {
+    const old = before.get(key(event, event.symbols[0]));
+    if (!old)
+      return event;
+    if (old.retires !== event.retires)
+      notes.push(`${event.symbols[0]}: retirement ${old.retires} (${old.version}) is now ${event.retires}`);
+    else if (carryVersion)
+      return { ...event, version: old.version };
+    return event;
+  });
+  const kept = stored.map((event) => ({
+    ...event,
+    symbols: event.symbols.filter((id) => !now.has(key(event, id)))
+  })).filter((event) => event.symbols.length > 0);
+  for (const event of kept)
+    notes.push(`${event.symbols.join(", ")}: no longer on the page, kept from ${event.version}`);
+  return { events: [...kept, ...current], notes };
+}
+function group(provider, events) {
+  const byVersion = /* @__PURE__ */ new Map();
+  const ids = /* @__PURE__ */ new Set();
+  for (const event of events) {
+    if (ids.has(event.id))
+      throw new Error(`duplicate event id ${event.id}`);
+    ids.add(event.id);
+    byVersion.set(event.version, [
+      ...byVersion.get(event.version) ?? [],
+      event
+    ]);
+  }
+  return [...byVersion].sort(([a], [b]) => a.localeCompare(b)).map(([version2, list2]) => ({
+    provider,
+    version: version2,
+    date: version2,
+    events: list2.sort((a, b) => a.id.localeCompare(b.id))
+  }));
+}
+var key;
+var init_history = __esm({
+  "packages/providers/dist/src/deprecations/history.js"() {
+    "use strict";
+    init_collection();
+    key = (event, id) => `${event.products}|${id}`;
   }
 });
 
@@ -2049,9 +2171,10 @@ var init_parse = __esm({
 
 // packages/providers/dist/src/deprecations/collect.js
 function collectDeprecations(provider) {
-  return async ({ fetch: fetch2 }) => {
+  return async (context) => {
     const url = `${provider.changelog}.md`;
-    const versions = parseDeprecations(await fetchText(fetch2, url), {
+    const markdown2 = due(url, context.hour) ? await fetchText(context.fetch, url) : await fetchIfChanged(context, url);
+    const versions = markdown2 === null ? group(provider.name, await context.stored()) : parseDeprecations(markdown2, {
       provider: provider.name,
       page: provider.changelog,
       ...options[provider.name]
@@ -2067,64 +2190,13 @@ var init_collect = __esm({
     "use strict";
     init_collection();
     init_manifest5();
+    init_refresh();
+    init_history();
     init_parse();
     options = {
       openai: { systems },
       anthropic: { dot: "-" }
     };
-  }
-});
-
-// packages/providers/dist/src/deprecations/history.js
-function keepHistory(stored, fresh, carryVersion) {
-  const before = /* @__PURE__ */ new Map();
-  for (const event of stored)
-    for (const id of event.symbols)
-      before.set(key(event, id), event);
-  const now = new Set(fresh.flatMap((e) => e.symbols.map((id) => key(e, id))));
-  const notes = [];
-  const current = fresh.map((event) => {
-    const old = before.get(key(event, event.symbols[0]));
-    if (!old)
-      return event;
-    if (old.retires !== event.retires)
-      notes.push(`${event.symbols[0]}: retirement ${old.retires} (${old.version}) is now ${event.retires}`);
-    else if (carryVersion)
-      return { ...event, version: old.version };
-    return event;
-  });
-  const kept = stored.map((event) => ({
-    ...event,
-    symbols: event.symbols.filter((id) => !now.has(key(event, id)))
-  })).filter((event) => event.symbols.length > 0);
-  for (const event of kept)
-    notes.push(`${event.symbols.join(", ")}: no longer on the page, kept from ${event.version}`);
-  return { events: [...kept, ...current], notes };
-}
-function group(provider, events) {
-  const byVersion = /* @__PURE__ */ new Map();
-  const ids = /* @__PURE__ */ new Set();
-  for (const event of events) {
-    if (ids.has(event.id))
-      throw new Error(`duplicate event id ${event.id}`);
-    ids.add(event.id);
-    byVersion.set(event.version, [
-      ...byVersion.get(event.version) ?? [],
-      event
-    ]);
-  }
-  return [...byVersion].sort(([a], [b]) => a.localeCompare(b)).map(([version2, list2]) => ({
-    provider,
-    version: version2,
-    date: version2,
-    events: list2.sort((a, b) => a.id.localeCompare(b.id))
-  }));
-}
-var key;
-var init_history = __esm({
-  "packages/providers/dist/src/deprecations/history.js"() {
-    "use strict";
-    key = (event, id) => `${event.products}|${id}`;
   }
 });
 
@@ -2207,10 +2279,20 @@ var init_parse2 = __esm({
 // packages/providers/dist/src/gemini/collect.js
 async function collectGemini(context) {
   const url = gemini.changelog;
-  const [markdown2, html] = await Promise.all([
-    fetchText(context.fetch, `${url}.md.txt`),
-    fetchText(context.fetch, url)
-  ]);
+  const pages = [`${url}.md.txt`, url];
+  const fetched = await Promise.all(pages.map((page) => due(page, context.hour) ? fetchText(context.fetch, page) : fetchIfChanged(context, page)));
+  if (fetched.every((text2) => text2 === null)) {
+    const kept = await context.stored();
+    if (kept.length === 0)
+      throw new Error(`no retirements parsed from ${url}`);
+    return {
+      versions: group(gemini.name, kept),
+      judge: /* @__PURE__ */ new Map(),
+      fresh: 0,
+      shut: 0
+    };
+  }
+  const [markdown2, html] = await Promise.all(fetched.map(async (text2, i) => text2 ?? fetchText(context.fetch, pages[i])));
   const fresh = parseGemini(markdown2, shutDown(html), {
     page: url,
     observed: context.today
@@ -2231,8 +2313,29 @@ var init_collect2 = __esm({
     "use strict";
     init_collection();
     init_history();
+    init_refresh();
     init_manifest4();
     init_parse2();
+  }
+});
+
+// packages/providers/dist/src/throttle.js
+var SourceRateLimited;
+var init_throttle = __esm({
+  "packages/providers/dist/src/throttle.js"() {
+    "use strict";
+    SourceRateLimited = class extends Error {
+      url;
+      retryAfterSeconds;
+      status;
+      name = "SourceRateLimited";
+      constructor(url, retryAfterSeconds, status2 = 429) {
+        super(`${status2} ${url}, retry after ${retryAfterSeconds} s`);
+        this.url = url;
+        this.retryAfterSeconds = retryAfterSeconds;
+        this.status = status2;
+      }
+    };
   }
 });
 
@@ -2248,8 +2351,8 @@ function singular2(word3) {
   return word3;
 }
 function wordsOf2(text2) {
-  const words2 = text2.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().match(/[a-z0-9]+/g);
-  return ` ${(words2 ?? []).map(singular2).join(" ")} `;
+  const words3 = text2.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().match(/[a-z0-9]+/g);
+  return ` ${(words3 ?? []).map(singular2).join(" ")} `;
 }
 function inTitle(title, field2) {
   return wordsOf2(title).includes(wordsOf2(field2));
@@ -2508,6 +2611,8 @@ async function archivedEntries(surface, { fetch: fetch2, stored, log }) {
       continue;
     }
     const markdown2 = await fetchText(fetch2, rawLink(snapshot)).catch((error) => {
+      if (error instanceof SourceRateLimited)
+        throw error;
       log(`release notes ${snapshot.version} skipped: ${error.message}`);
       return null;
     });
@@ -2523,6 +2628,7 @@ var init_release_notes = __esm({
   "packages/providers/dist/src/shopify/release-notes.js"() {
     "use strict";
     init_collection();
+    init_throttle();
     init_events();
     init_feed();
     ARCHIVE = "https://web.archive.org/web";
@@ -8403,7 +8509,7 @@ async function fetchSchema(version2, surface, get = fetch) {
   const url = `${surface.proxy}/${version2}`;
   const response = await get(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "User-Agent": "upseam" },
+    headers: collectorHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({
       query: getIntrospectionQuery({ inputValueDeprecation: true })
     })
@@ -8493,6 +8599,7 @@ var init_schema2 = __esm({
   "packages/providers/dist/src/shopify/schema.js"() {
     "use strict";
     init_graphql();
+    init_collection();
     init_events();
     ROOTS = /* @__PURE__ */ new Set(["QueryRoot", "Mutation", "Query"]);
     subject = /^(?:Field |Argument |Enum value )?([A-Za-z_]\w*)(?:\.(\w+))?(?:\((\w+):\))?/;
@@ -8504,6 +8611,8 @@ async function fetchSchemas(versions, surface, { fetch: fetch2, log }) {
   const found = /* @__PURE__ */ new Map();
   for (const version2 of [...versions].sort().reverse()) {
     const schema = await fetchSchema(version2, surface, fetch2).catch((error) => {
+      if (error instanceof SourceRateLimited)
+        throw error;
       log(`schema ${version2} skipped: ${error.message}`);
       return null;
     });
@@ -8584,6 +8693,7 @@ var init_collect3 = __esm({
   "packages/providers/dist/src/shopify/collect.js"() {
     "use strict";
     init_collection();
+    init_throttle();
     init_calls2();
     init_events();
     init_feed();
@@ -8616,42 +8726,6 @@ var init_surfaces = __esm({
       [ADMIN.provider]: ADMIN,
       [STOREFRONT.provider]: STOREFRONT
     };
-  }
-});
-
-// packages/providers/dist/src/refresh.js
-import { createHash } from "node:crypto";
-function daysBefore(today, days) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(today))
-    return "";
-  const date = /* @__PURE__ */ new Date(`${today}T00:00:00Z`);
-  date.setUTCDate(date.getUTCDate() - days);
-  return date.toISOString().slice(0, 10);
-}
-function due(url, hour) {
-  if (hour === void 0)
-    return false;
-  const digest = createHash("sha256").update(url).digest();
-  return digest.readUInt32BE(0) % HOURS === hour;
-}
-function judgedPages(stored) {
-  const byPage = /* @__PURE__ */ new Map();
-  for (const event of stored)
-    byPage.set(event.changelog, byPage.has(event.changelog) ? null : event);
-  const out = /* @__PURE__ */ new Map();
-  for (const [page, event] of byPage)
-    if (event?.judgments) {
-      const { judgments: _, ...rest2 } = event;
-      out.set(page, rest2);
-    }
-  return out;
-}
-var RECENT_DAYS, HOURS;
-var init_refresh = __esm({
-  "packages/providers/dist/src/refresh.js"() {
-    "use strict";
-    RECENT_DAYS = 60;
-    HOURS = 24;
   }
 });
 
@@ -8877,11 +8951,11 @@ var init_renames = __esm({
 function specific2(symbol) {
   return /[_.]/.test(symbol) || /^[a-z][a-z0-9]*[A-Z]/.test(symbol);
 }
-function identifiers(cell, words2 = false) {
+function identifiers(cell, words3 = false) {
   return cell.split(/,| and /).map((part) => part.replace(/`/g, "").trim()).filter((part) => identifier.test(part)).map((part) => part.replace(/\[\]/g, "")).flatMap((path2) => {
     const last2 = path2.split(".").at(-1) ?? path2;
     return last2 === path2 ? [path2] : [path2, last2];
-  }).filter((symbol) => !symbol.startsWith("_") && (words2 || specific2(symbol)));
+  }).filter((symbol) => !symbol.startsWith("_") && (words3 || specific2(symbol)));
 }
 function snakeCase(name) {
   return name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
@@ -9048,17 +9122,22 @@ function fromStore(stored, row) {
     products: row.products.split(", ").filter(Boolean)
   };
 }
-async function collectStripe({ fetch: fetch2, today, hour, stored }) {
+async function collectStripe(context) {
+  const { fetch: fetch2, today, hour, stored } = context;
   const rows3 = parseIndex(await fetchText(fetch2, index));
   const known = judgedPages(await stored());
   const recent = daysBefore(today, RECENT_DAYS);
-  const reuse = rows3.map((row) => {
-    const event = known.get(row.url.replace(/\.md$/, ""));
+  const have = rows3.map((row) => known.get(row.url.replace(/\.md$/, "")));
+  const reuse = rows3.map((row, i) => {
     const settled = row.version.slice(0, 10) < recent && !due(row.url, hour);
-    return event && settled ? event : null;
+    return have[i] && settled ? have[i] : null;
   });
   const missing = rows3.flatMap((row, i) => reuse[i] ? [] : [i]);
-  const fetched = await pool(missing, 4, async (i) => parsePage(await fetchText(fetch2, rows3[i].url)));
+  const fetched = await pool(missing, 4, async (i) => {
+    const revalidate = have[i] && !due(rows3[i].url, hour);
+    const markdown2 = revalidate ? await fetchIfChanged(context, rows3[i].url) : await fetchText(fetch2, rows3[i].url);
+    return markdown2 === null ? null : parsePage(markdown2);
+  });
   const pages = new Map(missing.map((i, n) => [i, fetched[n]]));
   const ids = rows3.map((row) => ({
     id: slugOf(row.url),
@@ -9075,7 +9154,7 @@ async function collectStripe({ fetch: fetch2, today, hour, stored }) {
       events: []
     };
     const page = pages.get(i);
-    const event = page ? toEvent(row, page) : fromStore(reuse[i], row);
+    const event = page ? toEvent(row, page) : fromStore(have[i], row);
     event.id = ids[i].id;
     entry.events.push(event);
     if (page)
@@ -9121,13 +9200,6 @@ var init_collectors = __esm({
       anthropic: collectDeprecations(anthropic2),
       gemini: collectGemini
     };
-  }
-});
-
-// packages/providers/dist/src/throttle.js
-var init_throttle = __esm({
-  "packages/providers/dist/src/throttle.js"() {
-    "use strict";
   }
 });
 
@@ -9255,6 +9327,14 @@ function versionLine(result, where) {
   const from = byMinor ? `SDK ${sdk?.version}` : `SDK major ${sdk?.version?.split(".")[0] ?? "?"}`;
   return `API version: ${pin.value} (inferred from ${from}, ${where(pin.file)})`;
 }
+function samePin(pin, other) {
+  return !!other && pin.value === other.value && pin.file === other.file && pin.line === other.line;
+}
+function latestText(result) {
+  const latest = result.latest ?? "unknown";
+  const candidate = result.releaseCandidate;
+  return candidate ? `${latest} stable, ${candidate} release candidate` : latest;
+}
 function dataStart(result) {
   const start = providers[result.provider].dataStart;
   const value2 = result.surface.apiVersion?.value;
@@ -9265,7 +9345,7 @@ function eventFlag(event, today = (/* @__PURE__ */ new Date()).toISOString().sli
     return `retires not before ${event.retires}`;
   if (event.retires)
     return event.retires <= today ? "retired" : `retires ${event.retires}`;
-  return event.breaking ? "breaking" : event.jev && `${event.jev} (Jev)`;
+  return event.breaking ? "breaking" : event.jev && JEV_FLAGS[event.jev];
 }
 function prePinFlag(event, pin) {
   return `removed in ${event.version}, at or before your pin ${pin}, still referenced`;
@@ -9328,12 +9408,12 @@ function facts(result, where = plain2) {
   const webhooks = surface.pins.find((p) => p.role === "webhooks");
   if (webhooks)
     lines2.push(`Webhooks API version: ${webhooks.value} (${where(webhooks.file, webhooks.line)})`);
-  const others = surface.pins.filter((p) => p !== surface.apiVersion && !p.role);
+  const others = surface.pins.filter((p) => !p.role && !samePin(p, surface.apiVersion));
   if (others.length > 0) {
     lines2.push(`Other pins: ${others.map((p) => `${p.value} (${where(p.file, p.line)})`).join(", ")}`);
   }
   const latest = providers[provider].versionless ? "Latest notice" : "Latest";
-  lines2.push(`${latest}: ${result.latest ?? "unknown"}`);
+  lines2.push(`${latest}: ${latestText(result)}`);
   for (const warning of result.warnings ?? [])
     lines2.push(`Warning: ${warning}`);
   for (const warning of result.versionWarnings ?? [])
@@ -9369,7 +9449,7 @@ function renderText(result) {
     lines2.push(...summary(result.events, total), ...prePinLines(result));
   return lines2.join("\n");
 }
-var plain2, PRE_PIN_HEADING;
+var plain2, JEV_FLAGS, PRE_PIN_HEADING;
 var init_text = __esm({
   "packages/core/dist/src/render/text.js"() {
     "use strict";
@@ -9378,6 +9458,10 @@ var init_text = __esm({
     init_issue();
     init_lifecycle2();
     plain2 = (file, line3) => line3 ? `${file}:${line3}` : file;
+    JEV_FLAGS = {
+      breaking: "likely breaking",
+      check: "review"
+    };
     PRE_PIN_HEADING = "Removed at or before your pin, still referenced in code";
   }
 });
@@ -9553,6 +9637,12 @@ var init_issue = __esm({
 });
 
 // packages/core/dist/src/render/group.js
+function vendor(provider) {
+  return providers[provider]?.title ?? provider;
+}
+function link(event) {
+  return SAFE_URL.test(event.changelog) ? `[${label(event.title)}](${event.changelog})` : code(event.title);
+}
 var plural3;
 var init_group = __esm({
   "packages/core/dist/src/render/group.js"() {
@@ -9742,9 +9832,9 @@ var init_groups = __esm({
 });
 
 // packages/core/dist/src/match/access-forms.js
-function abbreviations(words2) {
-  const [name] = words2;
-  if (words2.length > 1 || name.length < MIN_ABBREVIATED_NAME)
+function abbreviations(words3) {
+  const [name] = words3;
+  if (words3.length > 1 || name.length < MIN_ABBREVIATED_NAME)
     return [];
   const prefixes = [];
   for (let n = MIN_ABBREVIATION; n < name.length; n++)
@@ -9752,11 +9842,11 @@ function abbreviations(words2) {
   return prefixes;
 }
 function receiverPattern(object2) {
-  const words2 = wordsOf(object2);
-  const snake = words2.join("_");
+  const words3 = wordsOf(object2);
+  const snake = words3.join("_");
   const snakeForm = `(?:[a-z][a-z0-9]*_)*${snake}${SNAKE_WRAPPER}`;
-  const camelForm = `(?:[a-z][a-z0-9]*(?:[A-Z][a-z0-9]*)*${pascal(words2)}|${camel(words2)})${CAMEL_WRAPPER}`;
-  const short = abbreviations(words2);
+  const camelForm = `(?:[a-z][a-z0-9]*(?:[A-Z][a-z0-9]*)*${pascal(words3)}|${camel(words3)})${CAMEL_WRAPPER}`;
+  const short = abbreviations(words3);
   const shortForm = short.length > 0 ? [`(?:${short.join("|")})`] : [];
   return `(?<!\\w)(?:${[snakeForm, camelForm, ...shortForm].join("|")})`;
 }
@@ -14622,29 +14712,29 @@ ${lanes.join("\n")}
       var buildPartRegExp = /^[a-z0-9-]+$/i;
       var numericIdentifierRegExp = /^(?:0|[1-9]\d*)$/;
       var _Version = class _Version2 {
-        constructor(major, minor = 0, patch = 0, prerelease = "", build2 = "") {
+        constructor(major, minor = 0, patch2 = 0, prerelease = "", build2 = "") {
           if (typeof major === "string") {
             const result = Debug.checkDefined(tryParseComponents(major), "Invalid version");
-            ({ major, minor, patch, prerelease, build: build2 } = result);
+            ({ major, minor, patch: patch2, prerelease, build: build2 } = result);
           }
           Debug.assert(major >= 0, "Invalid argument: major");
           Debug.assert(minor >= 0, "Invalid argument: minor");
-          Debug.assert(patch >= 0, "Invalid argument: patch");
+          Debug.assert(patch2 >= 0, "Invalid argument: patch");
           const prereleaseArray = prerelease ? isArray(prerelease) ? prerelease : prerelease.split(".") : emptyArray;
           const buildArray = build2 ? isArray(build2) ? build2 : build2.split(".") : emptyArray;
           Debug.assert(every(prereleaseArray, (s) => prereleasePartRegExp.test(s)), "Invalid argument: prerelease");
           Debug.assert(every(buildArray, (s) => buildPartRegExp.test(s)), "Invalid argument: build");
           this.major = major;
           this.minor = minor;
-          this.patch = patch;
+          this.patch = patch2;
           this.prerelease = prereleaseArray;
           this.build = buildArray;
         }
         static tryParse(text2) {
           const result = tryParseComponents(text2);
           if (!result) return void 0;
-          const { major, minor, patch, prerelease, build: build2 } = result;
-          return new _Version2(major, minor, patch, prerelease, build2);
+          const { major, minor, patch: patch2, prerelease, build: build2 } = result;
+          return new _Version2(major, minor, patch2, prerelease, build2);
         }
         compareTo(other) {
           if (this === other) return 0;
@@ -14667,11 +14757,11 @@ ${lanes.join("\n")}
           const {
             major = this.major,
             minor = this.minor,
-            patch = this.patch,
+            patch: patch2 = this.patch,
             prerelease = this.prerelease,
             build: build2 = this.build
           } = fields;
-          return new _Version2(major, minor, patch, prerelease, build2);
+          return new _Version2(major, minor, patch2, prerelease, build2);
         }
         toString() {
           let result = `${this.major}.${this.minor}.${this.patch}`;
@@ -14685,13 +14775,13 @@ ${lanes.join("\n")}
       function tryParseComponents(text2) {
         const match = versionRegExp.exec(text2);
         if (!match) return void 0;
-        const [, major, minor = "0", patch = "0", prerelease = "", build2 = ""] = match;
+        const [, major, minor = "0", patch2 = "0", prerelease = "", build2 = ""] = match;
         if (prerelease && !prereleaseRegExp.test(prerelease)) return void 0;
         if (build2 && !buildRegExp.test(build2)) return void 0;
         return {
           major: parseInt(major, 10),
           minor: parseInt(minor, 10),
-          patch: parseInt(patch, 10),
+          patch: parseInt(patch2, 10),
           prerelease,
           build: build2
         };
@@ -14770,15 +14860,15 @@ ${lanes.join("\n")}
       function parsePartial(text2) {
         const match = partialRegExp.exec(text2);
         if (!match) return void 0;
-        const [, major, minor = "*", patch = "*", prerelease, build2] = match;
+        const [, major, minor = "*", patch2 = "*", prerelease, build2] = match;
         const version22 = new Version(
           isWildcard(major) ? 0 : parseInt(major, 10),
           isWildcard(major) || isWildcard(minor) ? 0 : parseInt(minor, 10),
-          isWildcard(major) || isWildcard(minor) || isWildcard(patch) ? 0 : parseInt(patch, 10),
+          isWildcard(major) || isWildcard(minor) || isWildcard(patch2) ? 0 : parseInt(patch2, 10),
           prerelease,
           build2
         );
-        return { version: version22, major, minor, patch };
+        return { version: version22, major, minor, patch: patch2 };
       }
       function parseHyphen(left, right, comparators) {
         const leftResult = parsePartial(left);
@@ -14798,7 +14888,7 @@ ${lanes.join("\n")}
       function parseComparator(operator, text2, comparators) {
         const result = parsePartial(text2);
         if (!result) return false;
-        const { version: version22, major, minor, patch } = result;
+        const { version: version22, major, minor, patch: patch2 } = result;
         if (!isWildcard(major)) {
           switch (operator) {
             case "~":
@@ -14815,25 +14905,25 @@ ${lanes.join("\n")}
               comparators.push(createComparator(
                 "<",
                 version22.increment(
-                  version22.major > 0 || isWildcard(minor) ? "major" : version22.minor > 0 || isWildcard(patch) ? "minor" : "patch"
+                  version22.major > 0 || isWildcard(minor) ? "major" : version22.minor > 0 || isWildcard(patch2) ? "minor" : "patch"
                 )
               ));
               break;
             case "<":
             case ">=":
               comparators.push(
-                isWildcard(minor) || isWildcard(patch) ? createComparator(operator, version22.with({ prerelease: "0" })) : createComparator(operator, version22)
+                isWildcard(minor) || isWildcard(patch2) ? createComparator(operator, version22.with({ prerelease: "0" })) : createComparator(operator, version22)
               );
               break;
             case "<=":
             case ">":
               comparators.push(
-                isWildcard(minor) ? createComparator(operator === "<=" ? "<" : ">=", version22.increment("major").with({ prerelease: "0" })) : isWildcard(patch) ? createComparator(operator === "<=" ? "<" : ">=", version22.increment("minor").with({ prerelease: "0" })) : createComparator(operator, version22)
+                isWildcard(minor) ? createComparator(operator === "<=" ? "<" : ">=", version22.increment("major").with({ prerelease: "0" })) : isWildcard(patch2) ? createComparator(operator === "<=" ? "<" : ">=", version22.increment("minor").with({ prerelease: "0" })) : createComparator(operator, version22)
               );
               break;
             case "=":
             case void 0:
-              if (isWildcard(minor) || isWildcard(patch)) {
+              if (isWildcard(minor) || isWildcard(patch2)) {
                 comparators.push(createComparator(">=", version22.with({ prerelease: "0" })));
                 comparators.push(createComparator("<", version22.increment(isWildcard(minor) ? "major" : "minor").with({ prerelease: "0" })));
               } else {
@@ -35042,8 +35132,8 @@ ${lanes.join("\n")}
           return 0;
         }
         function parenthesizeBinaryOperand(binaryOperator, operand, isLeftSideOfBinary, leftOperand) {
-          const skipped2 = skipPartiallyEmittedExpressions(operand);
-          if (skipped2.kind === 218) {
+          const skipped3 = skipPartiallyEmittedExpressions(operand);
+          if (skipped3.kind === 218) {
             return operand;
           }
           return binaryOperandNeedsParentheses(binaryOperator, operand, isLeftSideOfBinary, leftOperand) ? factory2.createParenthesizedExpression(operand) : operand;
@@ -63754,10 +63844,10 @@ ${lanes.join("\n")}
         const importedPath = toPath(importedFileName, cwd, getCanonicalFileName);
         const redirects = host2.redirectTargetsMap.get(importedPath) || emptyArray;
         const importedFileNames = [...referenceRedirect ? [referenceRedirect] : emptyArray, importedFileName, ...redirects];
-        const targets3 = importedFileNames.map((f) => getNormalizedAbsolutePath(f, cwd));
-        let shouldFilterIgnoredPaths = !every(targets3, containsIgnoredPath);
+        const targets4 = importedFileNames.map((f) => getNormalizedAbsolutePath(f, cwd));
+        let shouldFilterIgnoredPaths = !every(targets4, containsIgnoredPath);
         if (!preferSymlinks) {
-          const result2 = forEach(targets3, (p) => !(shouldFilterIgnoredPaths && containsIgnoredPath(p)) && cb(p, referenceRedirect === p));
+          const result2 = forEach(targets4, (p) => !(shouldFilterIgnoredPaths && containsIgnoredPath(p)) && cb(p, referenceRedirect === p));
           if (result2) return result2;
         }
         const symlinkedDirectories = (_b = host2.getSymlinkCache) == null ? void 0 : _b.call(host2).getSymlinkedDirectoriesByRealpath();
@@ -63771,7 +63861,7 @@ ${lanes.join("\n")}
             if (startsWithDirectory(importingFileName, realPathDirectory, getCanonicalFileName)) {
               return false;
             }
-            return forEach(targets3, (target2) => {
+            return forEach(targets4, (target2) => {
               if (!startsWithDirectory(target2, realPathDirectory, getCanonicalFileName)) {
                 return;
               }
@@ -63785,7 +63875,7 @@ ${lanes.join("\n")}
             });
           }
         );
-        return result || (preferSymlinks ? forEach(targets3, (p) => shouldFilterIgnoredPaths && containsIgnoredPath(p) ? void 0 : cb(p, p === referenceRedirect)) : void 0);
+        return result || (preferSymlinks ? forEach(targets4, (p) => shouldFilterIgnoredPaths && containsIgnoredPath(p) ? void 0 : cb(p, p === referenceRedirect)) : void 0);
       }
       function getAllModulePaths(info, importedFileName, host2, preferences, compilerOptions, options2 = {}) {
         var _a;
@@ -72389,7 +72479,7 @@ ${lanes.join("\n")}
               true
             );
             const serializePropertySymbolForInterfaceWorker = makeSerializePropertySymbol(
-              (mods, name, question2, type) => factory.createPropertySignature(mods, name, question2, type),
+              (mods, name, question3, type) => factory.createPropertySignature(mods, name, question3, type),
               174,
               /*useAccessors*/
               false
@@ -75912,11 +76002,11 @@ ${lanes.join("\n")}
         function getNonMissingTypeOfSymbol(symbol) {
           return removeMissingType(getTypeOfSymbol(symbol), !!(symbol.flags & 16777216));
         }
-        function isReferenceToSomeType(type, targets3) {
+        function isReferenceToSomeType(type, targets4) {
           if (type === void 0 || (getObjectFlags(type) & 4) === 0) {
             return false;
           }
-          for (const target2 of targets3) {
+          for (const target2 of targets4) {
             if (type.target === target2) {
               return true;
             }
@@ -82615,29 +82705,29 @@ ${lanes.join("\n")}
         function instantiateIndexInfos(indexInfos, mapper) {
           return instantiateList(indexInfos, mapper, instantiateIndexInfo);
         }
-        function createTypeMapper(sources, targets3) {
-          return sources.length === 1 ? makeUnaryTypeMapper(sources[0], targets3 ? targets3[0] : anyType) : makeArrayTypeMapper(sources, targets3);
+        function createTypeMapper(sources2, targets4) {
+          return sources2.length === 1 ? makeUnaryTypeMapper(sources2[0], targets4 ? targets4[0] : anyType) : makeArrayTypeMapper(sources2, targets4);
         }
         function getMappedType(type, mapper) {
           switch (mapper.kind) {
             case 0:
               return type === mapper.source ? mapper.target : type;
             case 1: {
-              const sources = mapper.sources;
-              const targets3 = mapper.targets;
-              for (let i = 0; i < sources.length; i++) {
-                if (type === sources[i]) {
-                  return targets3 ? targets3[i] : anyType;
+              const sources2 = mapper.sources;
+              const targets4 = mapper.targets;
+              for (let i = 0; i < sources2.length; i++) {
+                if (type === sources2[i]) {
+                  return targets4 ? targets4[i] : anyType;
                 }
               }
               return type;
             }
             case 2: {
-              const sources = mapper.sources;
-              const targets3 = mapper.targets;
-              for (let i = 0; i < sources.length; i++) {
-                if (type === sources[i]) {
-                  return targets3[i]();
+              const sources2 = mapper.sources;
+              const targets4 = mapper.targets;
+              for (let i = 0; i < sources2.length; i++) {
+                if (type === sources2[i]) {
+                  return targets4[i]();
                 }
               }
               return type;
@@ -82653,21 +82743,21 @@ ${lanes.join("\n")}
         function makeUnaryTypeMapper(source, target2) {
           return Debug.attachDebugPrototypeIfDebug({ kind: 0, source, target: target2 });
         }
-        function makeArrayTypeMapper(sources, targets3) {
-          return Debug.attachDebugPrototypeIfDebug({ kind: 1, sources, targets: targets3 });
+        function makeArrayTypeMapper(sources2, targets4) {
+          return Debug.attachDebugPrototypeIfDebug({ kind: 1, sources: sources2, targets: targets4 });
         }
         function makeFunctionTypeMapper(func, debugInfo) {
           return Debug.attachDebugPrototypeIfDebug({ kind: 3, func, debugInfo: Debug.isDebugging ? debugInfo : void 0 });
         }
-        function makeDeferredTypeMapper(sources, targets3) {
-          return Debug.attachDebugPrototypeIfDebug({ kind: 2, sources, targets: targets3 });
+        function makeDeferredTypeMapper(sources2, targets4) {
+          return Debug.attachDebugPrototypeIfDebug({ kind: 2, sources: sources2, targets: targets4 });
         }
         function makeCompositeTypeMapper(kind2, mapper1, mapper2) {
           return Debug.attachDebugPrototypeIfDebug({ kind: kind2, mapper1, mapper2 });
         }
-        function createTypeEraser(sources) {
+        function createTypeEraser(sources2) {
           return createTypeMapper(
-            sources,
+            sources2,
             /*targets*/
             void 0
           );
@@ -85011,18 +85101,18 @@ ${lanes.join("\n")}
             }
             return result2;
           }
-          function typeArgumentsRelatedTo(sources = emptyArray, targets3 = emptyArray, variances = emptyArray, reportErrors2, intersectionState) {
-            if (sources.length !== targets3.length && relation === identityRelation) {
+          function typeArgumentsRelatedTo(sources2 = emptyArray, targets4 = emptyArray, variances = emptyArray, reportErrors2, intersectionState) {
+            if (sources2.length !== targets4.length && relation === identityRelation) {
               return 0;
             }
-            const length2 = sources.length <= targets3.length ? sources.length : targets3.length;
+            const length2 = sources2.length <= targets4.length ? sources2.length : targets4.length;
             let result2 = -1;
             for (let i = 0; i < length2; i++) {
               const varianceFlags = i < variances.length ? variances[i] : 1;
               const variance = varianceFlags & 7;
               if (variance !== 4) {
-                const s = sources[i];
-                const t = targets3[i];
+                const s = sources2[i];
+                const t = targets4[i];
                 let related = -1;
                 if (varianceFlags & 8) {
                   related = relation === identityRelation ? isRelatedTo(
@@ -88229,12 +88319,12 @@ ${lanes.join("\n")}
             }
             if (target2.flags & 134217728) {
               const [tempSources, tempTargets] = inferFromMatchingTypes(source.flags & 134217728 ? source.types : [source], target2.types, isTypeOrBaseIdenticalTo);
-              const [sources, targets3] = inferFromMatchingTypes(tempSources, tempTargets, isTypeCloselyMatchedBy);
-              if (targets3.length === 0) {
+              const [sources2, targets4] = inferFromMatchingTypes(tempSources, tempTargets, isTypeCloselyMatchedBy);
+              if (targets4.length === 0) {
                 return;
               }
-              target2 = getUnionType(targets3);
-              if (sources.length === 0) {
+              target2 = getUnionType(targets4);
+              if (sources2.length === 0) {
                 inferWithPriority(
                   source,
                   target2,
@@ -88243,15 +88333,15 @@ ${lanes.join("\n")}
                 );
                 return;
               }
-              source = getUnionType(sources);
+              source = getUnionType(sources2);
             } else if (target2.flags & 268435456 && !every(target2.types, isNonGenericObjectType)) {
               if (!(source.flags & 134217728)) {
-                const [sources, targets3] = inferFromMatchingTypes(source.flags & 268435456 ? source.types : [source], target2.types, isTypeIdenticalTo);
-                if (sources.length === 0 || targets3.length === 0) {
+                const [sources2, targets4] = inferFromMatchingTypes(source.flags & 268435456 ? source.types : [source], target2.types, isTypeIdenticalTo);
+                if (sources2.length === 0 || targets4.length === 0) {
                   return;
                 }
-                source = getIntersectionType(sources);
-                target2 = getIntersectionType(targets3);
+                source = getIntersectionType(sources2);
+                target2 = getIntersectionType(targets4);
               }
             }
             if (target2.flags & (33554432 | 16777216)) {
@@ -88396,10 +88486,10 @@ ${lanes.join("\n")}
             inferFromContravariantTypes(source, target2);
             priority = savePriority;
           }
-          function inferToMultipleTypesWithPriority(source, targets3, targetFlags, newPriority) {
+          function inferToMultipleTypesWithPriority(source, targets4, targetFlags, newPriority) {
             const savePriority = priority;
             priority |= newPriority;
-            inferToMultipleTypes(source, targets3, targetFlags);
+            inferToMultipleTypes(source, targets4, targetFlags);
             priority = savePriority;
           }
           function invokeOnce(source, target2, action) {
@@ -88432,11 +88522,11 @@ ${lanes.join("\n")}
             visited.set(key2, inferencePriority);
             inferencePriority = Math.min(inferencePriority, saveInferencePriority);
           }
-          function inferFromMatchingTypes(sources, targets3, matches) {
+          function inferFromMatchingTypes(sources2, targets4, matches) {
             let matchedSources;
             let matchedTargets;
-            for (const t of targets3) {
-              for (const s of sources) {
+            for (const t of targets4) {
+              for (const s of sources2) {
                 if (matches(s, t)) {
                   inferFromTypes(s, t);
                   matchedSources = appendIfUnique(matchedSources, s);
@@ -88445,8 +88535,8 @@ ${lanes.join("\n")}
               }
             }
             return [
-              matchedSources ? filter(sources, (t) => !contains(matchedSources, t)) : sources,
-              matchedTargets ? filter(targets3, (t) => !contains(matchedTargets, t)) : targets3
+              matchedSources ? filter(sources2, (t) => !contains(matchedSources, t)) : sources2,
+              matchedTargets ? filter(targets4, (t) => !contains(matchedTargets, t)) : targets4
             ];
           }
           function inferFromTypeArguments(sourceTypes, targetTypes, variances) {
@@ -88492,22 +88582,22 @@ ${lanes.join("\n")}
             }
             return typeVariable;
           }
-          function inferToMultipleTypes(source, targets3, targetFlags) {
+          function inferToMultipleTypes(source, targets4, targetFlags) {
             let typeVariableCount = 0;
             if (targetFlags & 134217728) {
               let nakedTypeVariable;
-              const sources = source.flags & 134217728 ? source.types : [source];
-              const matched = new Array(sources.length);
+              const sources2 = source.flags & 134217728 ? source.types : [source];
+              const matched = new Array(sources2.length);
               let inferenceCircularity = false;
-              for (const t of targets3) {
+              for (const t of targets4) {
                 if (getInferenceInfoForType(t)) {
                   nakedTypeVariable = t;
                   typeVariableCount++;
                 } else {
-                  for (let i = 0; i < sources.length; i++) {
+                  for (let i = 0; i < sources2.length; i++) {
                     const saveInferencePriority = inferencePriority;
                     inferencePriority = 2048;
-                    inferFromTypes(sources[i], t);
+                    inferFromTypes(sources2[i], t);
                     if (inferencePriority === priority) matched[i] = true;
                     inferenceCircularity = inferenceCircularity || inferencePriority === -1;
                     inferencePriority = Math.min(inferencePriority, saveInferencePriority);
@@ -88515,7 +88605,7 @@ ${lanes.join("\n")}
                 }
               }
               if (typeVariableCount === 0) {
-                const intersectionTypeVariable = getSingleTypeVariableFromIntersectionTypes(targets3);
+                const intersectionTypeVariable = getSingleTypeVariableFromIntersectionTypes(targets4);
                 if (intersectionTypeVariable) {
                   inferWithPriority(
                     source,
@@ -88527,14 +88617,14 @@ ${lanes.join("\n")}
                 return;
               }
               if (typeVariableCount === 1 && !inferenceCircularity) {
-                const unmatched = flatMap(sources, (s, i) => matched[i] ? void 0 : s);
+                const unmatched = flatMap(sources2, (s, i) => matched[i] ? void 0 : s);
                 if (unmatched.length) {
                   inferFromTypes(getUnionType(unmatched), nakedTypeVariable);
                   return;
                 }
               }
             } else {
-              for (const t of targets3) {
+              for (const t of targets4) {
                 if (getInferenceInfoForType(t)) {
                   typeVariableCount++;
                 } else {
@@ -88543,7 +88633,7 @@ ${lanes.join("\n")}
               }
             }
             if (targetFlags & 268435456 ? typeVariableCount === 1 : typeVariableCount > 0) {
-              for (const t of targets3) {
+              for (const t of targets4) {
                 if (getInferenceInfoForType(t)) {
                   inferWithPriority(
                     source,
@@ -97095,15 +97185,15 @@ ${lanes.join("\n")}
           const numParams = signature.parameters.length;
           return signatureHasRestParameter(signature) ? numParams - 1 : numParams;
         }
-        function createCombinedSymbolFromTypes(sources, types) {
-          return createCombinedSymbolForOverloadFailure(sources, getUnionType(
+        function createCombinedSymbolFromTypes(sources2, types) {
+          return createCombinedSymbolForOverloadFailure(sources2, getUnionType(
             types,
             2
             /* Subtype */
           ));
         }
-        function createCombinedSymbolForOverloadFailure(sources, type) {
-          return createSymbolWithType(first(sources), type);
+        function createCombinedSymbolForOverloadFailure(sources2, type) {
+          return createSymbolWithType(first(sources2), type);
         }
         function pickLongestCandidateSignature(node3, candidates3, args, checkMode) {
           const bestIndex = getLongestCandidateIndex(candidates3, apparentArgumentCount === void 0 ? args.length : apparentArgumentCount);
@@ -114033,7 +114123,7 @@ ${lanes.join("\n")}
       function createSourceMapGenerator(host2, file, sourceRoot, sourcesDirectoryPath, generatorOptions) {
         var { enter, exit } = generatorOptions.extendedDiagnostics ? createTimer("Source Map", "beforeSourcemap", "afterSourcemap") : nullTimer;
         var rawSources = [];
-        var sources = [];
+        var sources2 = [];
         var sourceToSourceIndexMap = /* @__PURE__ */ new Map();
         var sourcesContent;
         var names2 = [];
@@ -114078,8 +114168,8 @@ ${lanes.join("\n")}
           );
           let sourceIndex = sourceToSourceIndexMap.get(source);
           if (sourceIndex === void 0) {
-            sourceIndex = sources.length;
-            sources.push(source);
+            sourceIndex = sources2.length;
+            sources2.push(source);
             rawSources.push(fileName);
             sourceToSourceIndexMap.set(source, sourceIndex);
           }
@@ -114251,7 +114341,7 @@ ${lanes.join("\n")}
             version: 3,
             file,
             sourceRoot,
-            sources,
+            sources: sources2,
             names: names2,
             mappings,
             sourcesContent
@@ -131128,7 +131218,7 @@ ${lanes.join("\n")}
         let renamedCatchVariableDeclarations;
         let inGeneratorFunctionBody;
         let inStatementContainingYield;
-        let blocks;
+        let blocks2;
         let blockOffsets;
         let blockActions;
         let blockStack;
@@ -131335,7 +131425,7 @@ ${lanes.join("\n")}
           const statements2 = [];
           const savedInGeneratorFunctionBody = inGeneratorFunctionBody;
           const savedInStatementContainingYield = inStatementContainingYield;
-          const savedBlocks = blocks;
+          const savedBlocks = blocks2;
           const savedBlockOffsets = blockOffsets;
           const savedBlockActions = blockActions;
           const savedBlockStack = blockStack;
@@ -131348,7 +131438,7 @@ ${lanes.join("\n")}
           const savedState = state2;
           inGeneratorFunctionBody = true;
           inStatementContainingYield = false;
-          blocks = void 0;
+          blocks2 = void 0;
           blockOffsets = void 0;
           blockActions = void 0;
           blockStack = void 0;
@@ -131376,7 +131466,7 @@ ${lanes.join("\n")}
           statements2.push(factory2.createReturnStatement(buildResult));
           inGeneratorFunctionBody = savedInGeneratorFunctionBody;
           inStatementContainingYield = savedInStatementContainingYield;
-          blocks = savedBlocks;
+          blocks2 = savedBlocks;
           blockOffsets = savedBlockOffsets;
           blockActions = savedBlockActions;
           blockStack = savedBlockStack;
@@ -132317,8 +132407,8 @@ ${lanes.join("\n")}
           labelOffsets[label4] = operations ? operations.length : 0;
         }
         function beginBlock(block3) {
-          if (!blocks) {
-            blocks = [];
+          if (!blocks2) {
+            blocks2 = [];
             blockActions = [];
             blockOffsets = [];
             blockStack = [];
@@ -132326,7 +132416,7 @@ ${lanes.join("\n")}
           const index3 = blockActions.length;
           blockActions[index3] = 0;
           blockOffsets[index3] = operations ? operations.length : 0;
-          blocks[index3] = block3;
+          blocks2[index3] = block3;
           blockStack.push(block3);
           return index3;
         }
@@ -132336,7 +132426,7 @@ ${lanes.join("\n")}
           const index3 = blockActions.length;
           blockActions[index3] = 1;
           blockOffsets[index3] = operations ? operations.length : 0;
-          blocks[index3] = block3;
+          blocks2[index3] = block3;
           blockStack.pop();
           return block3;
         }
@@ -132915,9 +133005,9 @@ ${lanes.join("\n")}
           }
         }
         function tryEnterOrLeaveBlock(operationIndex) {
-          if (blocks) {
+          if (blocks2) {
             for (; blockIndex < blockActions.length && blockOffsets[blockIndex] <= operationIndex; blockIndex++) {
-              const block3 = blocks[blockIndex];
+              const block3 = blocks2[blockIndex];
               const blockAction = blockActions[blockIndex];
               switch (block3.kind) {
                 case 0:
@@ -134115,7 +134205,7 @@ ${lanes.join("\n")}
           }
         }
         function createImportCallExpressionAMD(arg, containsLexicalThis) {
-          const resolve12 = factory2.createUniqueName("resolve");
+          const resolve14 = factory2.createUniqueName("resolve");
           const reject = factory2.createUniqueName("reject");
           const parameters = [
             factory2.createParameterDeclaration(
@@ -134124,7 +134214,7 @@ ${lanes.join("\n")}
               /*dotDotDotToken*/
               void 0,
               /*name*/
-              resolve12
+              resolve14
             ),
             factory2.createParameterDeclaration(
               /*modifiers*/
@@ -134141,7 +134231,7 @@ ${lanes.join("\n")}
                 factory2.createIdentifier("require"),
                 /*typeArguments*/
                 void 0,
-                [factory2.createArrayLiteralExpression([arg || factory2.createOmittedExpression()]), resolve12, reject]
+                [factory2.createArrayLiteralExpression([arg || factory2.createOmittedExpression()]), resolve14, reject]
               )
             )
           ]);
@@ -221072,8 +221162,8 @@ Additional information: BADCLIENT: Bad error code, ${badCode} not found in range
         installPackage(options2) {
           this.packageInstallId++;
           const request = { kind: "installPackage", ...options2, id: this.packageInstallId };
-          const promise = new Promise((resolve12, reject) => {
-            (this.packageInstalledPromise ?? (this.packageInstalledPromise = /* @__PURE__ */ new Map())).set(this.packageInstallId, { resolve: resolve12, reject });
+          const promise = new Promise((resolve14, reject) => {
+            (this.packageInstalledPromise ?? (this.packageInstalledPromise = /* @__PURE__ */ new Map())).set(this.packageInstallId, { resolve: resolve14, reject });
           });
           this.installer.send(request);
           return promise;
@@ -221477,7 +221567,7 @@ function searchSymbols(tree3, events, pattern = word, symbolsOf4 = (event) => ev
     ...kept.filter(({ file }) => !searchedLast(file)),
     ...kept.filter(({ file }) => searchedLast(file))
   ];
-  const sources = ordered.map(({ file, text: text2 }) => {
+  const sources2 = ordered.map(({ file, text: text2 }) => {
     const lines2 = text2.split("\n");
     const comments = commentMask(lines2);
     const skip = (text3, i) => comments[i] || IMPORT.test(text3);
@@ -221485,7 +221575,7 @@ function searchSymbols(tree3, events, pattern = word, symbolsOf4 = (event) => ev
   });
   const lowSource = ordered.map((source) => low(source));
   const compiled = events.map((event) => compile(symbolsOf4(event), pattern));
-  const index3 = lineIndex(sources, wanted(compiled));
+  const index3 = lineIndex(sources2, wanted(compiled));
   const asCode = (g) => {
     const source = ordered[index3.source[g]];
     return isJsx(source.file) ? jsxCodeLines(source)[index3.line[g]] : index3.text[g];
@@ -221682,6 +221772,16 @@ function rank(event) {
 function byRankThenVersion(a, b) {
   return rank(a) - rank(b) || compareVersions(a.version, b.version);
 }
+function latestOf(provider, versions, today) {
+  const newest2 = versions.at(-1);
+  if (provider.versionless || !newest2 || newest2.date <= today)
+    return { latest: newest2?.version ?? null };
+  const stable = versions.filter((entry) => entry.date <= today).at(-1);
+  return {
+    latest: stable?.version ?? null,
+    releaseCandidate: newest2.version
+  };
+}
 function inspectProvider(provider, tree3, options2 = {}) {
   const { apiVersion, today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10) } = options2;
   const versions = (options2.changes ?? bundledChanges).versions(provider.name);
@@ -221704,7 +221804,7 @@ function inspectProvider(provider, tree3, options2 = {}) {
     provider: provider.name,
     path: tree3.root,
     surface,
-    latest: versions.at(-1)?.version ?? null,
+    ...latestOf(provider, versions, today),
     events,
     ...prePin.length > 0 ? { prePin } : {},
     ...mismatch ? { warnings: [mismatch] } : {},
@@ -222584,8 +222684,8 @@ function changedTokens(before, after, context) {
     const oldFields = old.filter((t) => t.kind === "fstring").map((t) => t.text);
     if (now.some((t) => t.kind === "fstring" && !oldFields.includes(t.text)))
       return "adds an f-string";
-    const words2 = (list2) => list2.filter((t) => t.kind === "name" && KEYWORDS.has(t.text)).map((t) => t.text);
-    const keyword = extra(words2(now), words2(old), (k) => NEW_KEYWORDS.has(k));
+    const words3 = (list2) => list2.filter((t) => t.kind === "name" && KEYWORDS.has(t.text)).map((t) => t.text);
+    const keyword = extra(words3(now), words3(old), (k) => NEW_KEYWORDS.has(k));
     if (keyword !== null)
       return `adds the keyword ${keyword}`;
     const ops = (list2) => list2.filter((t) => t.kind === "op").map((t) => t.text);
@@ -223292,9 +223392,9 @@ var init_urls = __esm({
 
 // packages/core/dist/src/gates/text.js
 function sameWords(removed, added) {
-  const words2 = (text2) => counts2([...text2.matchAll(SENSITIVE)].map((m) => m[0].toLowerCase()));
-  const before = words2(removed);
-  const after = words2(added);
+  const words3 = (text2) => counts2([...text2.matchAll(SENSITIVE)].map((m) => m[0].toLowerCase()));
+  const before = words3(removed);
+  const after = words3(added);
   if (before.size !== after.size)
     return false;
   for (const [word3, n] of before)
@@ -223666,6 +223766,67 @@ var init_gates = __esm({
   }
 });
 
+// packages/core/dist/src/match/replace.js
+function modelSymbols(group3) {
+  return group3.events.flatMap((e) => e.symbols).filter((s) => s.length > 0 && !s.startsWith("/"));
+}
+function directReplacement(group3) {
+  const named2 = (e) => e.retires !== void 0 && replacements(e).length === 1 && replacements(e)[0] === group3.to;
+  return MODEL_ID.test(group3.to) && group3.events.length > 0 && modelSymbols(group3).length > 0 && group3.needsHuman.length === 0 && Boolean(providers[group3.provider]?.versionless) && group3.events.every(named2);
+}
+function idPattern(group3) {
+  const provider = providers[group3.provider];
+  const pattern = modelIds(provider, group3.events);
+  const ids = modelSymbols(group3).map((s) => pattern(s).source);
+  return new RegExp(ids.join("|"), "g");
+}
+function placesOf(group3) {
+  const wanted2 = new Set(briefFiles(group3));
+  const places3 = /* @__PURE__ */ new Map();
+  for (const match of group3.events.flatMap((e) => byConfidence(e.matches).high)) {
+    if (!wanted2.has(match.file))
+      continue;
+    const lines2 = places3.get(match.file) ?? /* @__PURE__ */ new Set();
+    places3.set(match.file, lines2.add(match.line - 1));
+  }
+  return places3;
+}
+function replaceModelIds(group3, files) {
+  if (!directReplacement(group3))
+    return null;
+  const pattern = idPattern(group3);
+  const changed2 = {};
+  for (const [file, lines2] of placesOf(group3)) {
+    const text2 = files[file];
+    if (text2 === void 0)
+      return null;
+    const rows3 = text2.split("\n");
+    for (const index3 of lines2) {
+      const row = rows3[index3];
+      if (row === void 0)
+        return null;
+      const next = row.replace(pattern, group3.to);
+      if (next === row)
+        return null;
+      rows3[index3] = next;
+    }
+    changed2[file] = rows3.join("\n");
+  }
+  return Object.keys(changed2).length > 0 ? changed2 : null;
+}
+var MODEL_ID;
+var init_replace = __esm({
+  "packages/core/dist/src/match/replace.js"() {
+    "use strict";
+    init_src4();
+    init_capability();
+    init_brief();
+    init_confidence();
+    init_search();
+    MODEL_ID = /^[A-Za-z0-9][\w.:/-]{0,99}$/;
+  }
+});
+
 // packages/core/dist/src/render/countdown.js
 function utcDay(date) {
   const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
@@ -223698,6 +223859,40 @@ var init_countdown = __esm({
     "use strict";
     init_group();
     DAY = 864e5;
+  }
+});
+
+// packages/core/dist/src/render/direct.js
+function fromOf(group3) {
+  return group3.from ?? group3.events[0]?.symbols[0] ?? "";
+}
+function sources(group3) {
+  return [...new Set(group3.events.map((e) => e.changelog))].filter((url) => SAFE_URL.test(url));
+}
+function directTitle(group3) {
+  return `Replace retired ${vendor(group3.provider)} model ${fromOf(group3)} with ${group3.to}`;
+}
+function directLines(group3) {
+  return [
+    `${fromOf(group3)} -> ${group3.to}: the direct replacement named by ${vendor(group3.provider)}; no model wrote this change`,
+    ...sources(group3)
+  ];
+}
+function directSection(group3) {
+  const name = label(vendor(group3.provider));
+  return [
+    `${name} retires ${code(fromOf(group3))} and names ${code(group3.to)} as its direct replacement. Upseam replaced the model id where your code uses it; no model wrote this change.`,
+    "",
+    `Source: ${group3.events.map(link).join(", ")}`,
+    "",
+    `${code(group3.to)} is a different model: it may accept different parameters and answer differently. Check these calls before you merge.`
+  ];
+}
+var init_direct = __esm({
+  "packages/core/dist/src/render/direct.js"() {
+    "use strict";
+    init_issue();
+    init_group();
   }
 });
 
@@ -223791,12 +223986,12 @@ function blocksOf(found, where, today) {
     ...details(true, "Needs you")
   ];
 }
-function fitted(blocks, budget) {
+function fitted(blocks2, budget) {
   const lines2 = [];
   const dropped = /* @__PURE__ */ new Set();
   let used = 0;
   let section5 = null;
-  for (const block3 of blocks) {
+  for (const block3 of blocks2) {
     const heading3 = block3.section === section5 ? [] : ["", `### ${block3.section}`, ""];
     const next = [...heading3, ...block3.lines];
     const size = bytes(next.join("\n")) + 1;
@@ -223827,8 +224022,8 @@ function renderSummary(results, coverage2, commit, options2 = {}) {
     ].join("\n");
   const limit = options2.limit ?? SUMMARY_LIMIT;
   const budget = limit - bytes([...head, ...foot].join("\n")) - OMITTED_NOTE_RESERVE;
-  const blocks = blocksOf(found, linker(commit), options2.today ?? /* @__PURE__ */ new Date());
-  const { lines: lines2, omitted } = fitted(blocks, budget);
+  const blocks2 = blocksOf(found, linker(commit), options2.today ?? /* @__PURE__ */ new Date());
+  const { lines: lines2, omitted } = fitted(blocks2, budget);
   const note = omitted > 0 ? [
     "",
     `> Shortened to fit GitHub's 1 MiB limit for job summaries: ${omitted} ${omitted === 1 ? "finding" : "findings"} left out. Run \`upseam report --dry-run --summary -\` for the full list.`
@@ -223922,8 +224117,10 @@ var init_src5 = __esm({
     init_groups();
     init_ports();
     init_search();
+    init_replace();
     init_target();
     init_countdown();
+    init_direct();
     init_coverage();
     init_summary();
     init_dashboard();
@@ -223981,7 +224178,7 @@ var init_clean = __esm({
 
 // packages/cli/dist/src/term/style.js
 function detect(env, isTTY) {
-  const rich = isTTY && !set(env.CI);
+  const rich = isTTY && !set(env.CI) && !set(env.GITHUB_ACTIONS);
   const colour = rich && !set(env.NO_COLOR) && env.TERM !== "dumb";
   const colorterm = (env.COLORTERM ?? "").toLowerCase();
   const depth = !colour ? "none" : colorterm === "truecolor" || colorterm === "24bit" ? "true" : /256/.test(env.TERM ?? "") ? "256" : "16";
@@ -223990,29 +224187,18 @@ function detect(env, isTTY) {
 function terminal(stream) {
   return detect(process.env, !!stream.isTTY);
 }
-var INK, TONES, RAINBOW, set, PLAIN, Paint;
+var INK, TONES, set, PLAIN, Paint;
 var init_style = __esm({
   "packages/cli/dist/src/term/style.js"() {
     "use strict";
     init_clean();
     INK = [2, 2, 2];
     TONES = {
-      red: ["31", 203, [249, 112, 102]],
-      amber: ["33", 215, [232, 162, 92]],
-      green: ["32", 114, [127, 199, 154]],
-      accent: ["94", 69, [111, 140, 245]],
-      file: ["36", 153, [185, 232, 255]],
-      jev: ["33", 222, [248, 223, 129]],
-      peach: ["35", 216, [251, 162, 120]],
-      line: ["90", 240, [92, 88, 85]]
+      red: [31, 160, [216, 58, 43]],
+      amber: [33, 136, [184, 119, 42]],
+      accent: [32, 29, [47, 154, 94]],
+      line: [90, 245, [138, 131, 128]]
     };
-    RAINBOW = [
-      [251, 162, 120],
-      [246, 188, 235],
-      [168, 188, 255],
-      [185, 232, 255],
-      [248, 223, 129]
-    ];
     set = (value2) => !!value2 && value2.length > 0;
     PLAIN = { rich: false, depth: "none", links: false };
     Paint = class {
@@ -224026,11 +224212,20 @@ var init_style = __esm({
       rgb([r, g, b], layer = 38) {
         return `${layer};2;${r};${g};${b}`;
       }
-      tone(tone, text2) {
-        const [basic, indexed, rgb] = TONES[tone];
+      colour([basic, indexed, rgb], layer) {
         const depth = this.term.depth;
-        const open = depth === "true" ? this.rgb(rgb) : depth === "256" ? `38;5;${indexed}` : basic;
-        return this.sgr(open, text2);
+        if (depth === "true")
+          return this.rgb(rgb, layer);
+        if (depth === "256")
+          return `${layer};5;${indexed}`;
+        return String(layer === 38 ? basic : basic + 10);
+      }
+      tone(tone, text2) {
+        return this.sgr(this.colour(TONES[tone], 38), text2);
+      }
+      pixels(text2, fg, bg) {
+        const back = bg ? `;${this.colour(bg, 48)}` : "";
+        return this.sgr(`${this.colour(fg, 38)}${back}`, text2);
       }
       bold(text2) {
         return this.sgr("1", text2);
@@ -224042,11 +224237,11 @@ var init_style = __esm({
         return this.bold(this.tone(tone, text2));
       }
       pill(tone, text2) {
-        const [basic, indexed, rgb] = TONES[tone];
         const depth = this.term.depth;
         if (depth === "none")
           return text2;
-        const open = depth === "true" ? `${this.rgb(rgb, 48)};${this.rgb(INK)}` : depth === "256" ? `48;5;${indexed};38;5;16` : `${Number(basic) + 10};30`;
+        const ink = depth === "true" ? this.rgb(INK) : depth === "256" ? "38;5;16" : "30";
+        const open = `${this.colour(TONES[tone], 48)};${ink}`;
         return this.sgr(`${open};1`, ` ${text2} `);
       }
       link(url, text2 = url) {
@@ -224055,21 +224250,8 @@ var init_style = __esm({
       anchor(url, shown2) {
         return this.term.links && (linkable(url) || localFile(url)) ? `\x1B]8;;${url}\x1B\\${shown2}\x1B]8;;\x1B\\` : shown2;
       }
-      cell(at2, text2) {
-        const depth = this.term.depth;
-        if (depth !== "true")
-          return this.tone("accent", text2);
-        const pos = Math.max(0, Math.min(1, at2)) * (RAINBOW.length - 1);
-        const [a, b] = [RAINBOW[Math.floor(pos)], RAINBOW[Math.ceil(pos)]];
-        const mix = a.map((v, k) => Math.round(v + (b[k] - v) * (pos % 1)));
-        return this.sgr(this.rgb(mix), text2);
-      }
       mark() {
-        const name = "upseam";
-        if (this.term.depth !== "true")
-          return `${this.tone("peach", "\u25C6")} ${this.bold(name)}`;
-        const letters = [...name].map((c, i) => this.bold(this.cell(i / (name.length - 1), c)));
-        return `${this.cell(0, "\u25C6")} ${letters.join("")}`;
+        return `${this.tone("red", "\u25C6")} ${this.bold("upseam")}`;
       }
       header(...parts) {
         return [this.mark(), ...parts.map((p) => this.dim(field(p)))].join("  ");
@@ -224123,7 +224305,7 @@ function pruneText(result, p) {
     "",
     `  ${p.bold(head)}`,
     ...dropped.map((d) => `  ${p.tone("red", "-")} ${p.dim(d)}`),
-    ...unjudged.map((u) => `  ${p.tone("jev", "?")} ${u}`)
+    ...unjudged.map((u) => `  ${p.tone("amber", "?")} ${u}`)
   ].join("\n");
 }
 function paint() {
@@ -224181,6 +224363,1197 @@ var init_failure = __esm({
         this.what = what;
         this.hint = hint4;
       }
+    };
+  }
+});
+
+// packages/cli/dist/src/commands/inspect/path.js
+import { statSync as statSync4 } from "node:fs";
+function exists(path2) {
+  try {
+    return statSync4(path2);
+  } catch (error) {
+    const code2 = error.code ?? "";
+    if (MISSING.has(code2))
+      return null;
+    throw error;
+  }
+}
+function checkPath(path2, command = "inspect") {
+  const found = exists(path2);
+  if (!found)
+    throw new HintedError(`path not found: ${path2}`, `pass the repository directory, for example: upseam ${command} ./my-repo`, 1);
+  if (!found.isDirectory())
+    throw new HintedError(`not a directory: ${path2}`, `${command} reads a repository; pass the directory that contains the file`, 1);
+}
+var MISSING;
+var init_path = __esm({
+  "packages/cli/dist/src/commands/inspect/path.js"() {
+    "use strict";
+    init_failure();
+    MISSING = /* @__PURE__ */ new Set(["ENOENT", "ENOTDIR"]);
+  }
+});
+
+// packages/cli/dist/src/commands/fix/brief.js
+import { readFileSync as readFileSync7 } from "node:fs";
+import { join as join8 } from "node:path";
+function changeType(event) {
+  const scores = event.judgments?.type;
+  if (!scores)
+    return event.type;
+  return Object.entries(scores).reduce((a, b) => b[1] > a[1] ? b : a)[0];
+}
+function fixable2(event) {
+  return matchedInCode(event) && !event.retires && (event.breaking || event.jev === "breaking") && MECHANICAL2.includes(changeType(event));
+}
+function candidates2(results) {
+  const found = [];
+  for (const { provider, events, prePin, surface } of results) {
+    const pin = surface.apiVersion?.value;
+    const drift = pin ? (prePin ?? []).map((e) => ({ ...e, prePin: pin })) : [];
+    for (const event of [...events, ...drift].filter(fixable2)) {
+      const same2 = found.find((c) => c.provider === provider && c.version === event.version);
+      if (same2)
+        same2.events.push(event);
+      else
+        found.push({ provider, version: event.version, events: [event] });
+    }
+  }
+  return found;
+}
+function pinnedAt(candidate) {
+  return candidate.events.every((e) => e.prePin) ? candidate.events[0]?.prePin : void 0;
+}
+function needsHuman(candidate) {
+  for (const event of candidate.events) {
+    if (changeType(event) === "type_change")
+      continue;
+    const names2 = replacements(event).length;
+    if (names2 === 0)
+      return `${event.title} names no replacement, so moving off it needs you`;
+    if (names2 > 1)
+      return `${event.title} names several replacements, so choosing one needs you`;
+  }
+  return null;
+}
+function maskedLineOf(masking, match) {
+  const lines2 = masking.files[match.file].split("\n");
+  return lines2[match.line - 1].trim();
+}
+function eventText(event, masking) {
+  const lines2 = [
+    `## ${event.version}: ${event.title}`,
+    `Change type: ${changeType(event)}`,
+    `Changelog: ${event.changelog}`,
+    `Summary: ${event.summary}`,
+    ...event.changes.map((c) => `- ${c.change} ${c.what} (${c.where})`),
+    ...event.removed?.length ? [`Removed: ${event.removed.join(", ")}`] : [],
+    ...event.replacedBy?.length ? [`Replaced by: ${event.replacedBy.join(", ")}`] : [],
+    "Matched lines:",
+    ...byConfidence(event.matches).high.map((m) => `- ${m.file}:${m.line}: ${maskedLineOf(masking, m)}`)
+  ];
+  return lines2.join("\n");
+}
+function buildBrief2(path2, candidate) {
+  const confident = candidate.events.flatMap((e) => byConfidence(e.matches).high);
+  const names2 = [...new Set(confident.map((m) => m.file))];
+  const files = {};
+  let size = 0;
+  for (const file of names2) {
+    files[file] = readFileSync7(join8(path2, file), "utf8");
+    size += files[file].length;
+  }
+  if (size > MAX_FILES) {
+    throw new InspectError(`affected files are ${size} characters, over the ${MAX_FILES} limit for a lite patch`, 1);
+  }
+  const masking = maskFiles(files);
+  const pin = pinnedAt(candidate);
+  const goal = pin ? `The code is pinned to API version ${pin} but still uses what API version ${candidate.version} removed. Update it to the replacement.` : `Upgrade the code to API version ${candidate.version}.`;
+  const user = [
+    `API provider: ${candidate.provider}. ${goal}`,
+    ...maskingNote(masking),
+    ...candidate.events.map((event) => eventText(event, masking)),
+    "# Files",
+    ...Object.entries(masking.files).map(([file, text2]) => `--- ${file}
+${text2}
+--- end of ${file}`)
+  ].join("\n\n");
+  return { ...candidate, files, masking, prompt: { system: SYSTEM2, user } };
+}
+function parseReply2(text2, brief) {
+  const json = text2.trim().replace(/^```(?:json)?\s*\n/, "").replace(/\n```$/, "");
+  let reply;
+  try {
+    reply = JSON.parse(json);
+  } catch {
+    throw new InspectError("model reply is not JSON; no patch", 1);
+  }
+  const files = reply?.files;
+  if (!Array.isArray(files)) {
+    throw new InspectError('model reply has no "files" array; no patch', 1);
+  }
+  const changed2 = {};
+  for (const entry of files) {
+    const { path: path2, content: content3 } = entry ?? {};
+    if (typeof path2 !== "string" || typeof content3 !== "string") {
+      throw new InspectError("model reply has a malformed file entry", 1);
+    }
+    if (!Object.hasOwn(brief.files, path2)) {
+      throw new InspectError(`model reply names ${JSON.stringify(path2)}, which is not a file of the brief; no patch`, 1);
+    }
+    if (Object.hasOwn(changed2, path2)) {
+      throw new InspectError(`model reply names ${JSON.stringify(path2)} twice; no patch`, 1);
+    }
+    if (content3 !== brief.masking.files[path2])
+      changed2[path2] = content3;
+  }
+  return changed2;
+}
+var MECHANICAL2, MAX_FILES, SYSTEM2;
+var init_brief2 = __esm({
+  "packages/cli/dist/src/commands/fix/brief.js"() {
+    "use strict";
+    init_src5();
+    MECHANICAL2 = ["removal", "rename", "type_change"];
+    MAX_FILES = 24e3;
+    SYSTEM2 = [
+      "You update application code for a breaking change in an external API.",
+      "Change only what the API change requires; keep formatting, style and unrelated code as they are.",
+      'Reply with JSON only, no prose and no code fences: {"files":[{"path":"<path from the brief>","content":"<complete new file content>"}]}.',
+      "List only files you change, with their complete new content. Use only paths given in the brief.",
+      'If the change cannot be made safely without more context, reply {"files":[]}.'
+    ].join("\n");
+  }
+});
+
+// packages/cli/dist/src/commands/fix/text.js
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname as dirname2, join as join9 } from "node:path";
+function diff2(brief, changed2) {
+  const dir = mkdtempSync(join9(tmpdir(), "upseam-diff-"));
+  try {
+    const out = [];
+    for (const [file, content3] of Object.entries(changed2)) {
+      for (const [side2, text2] of [
+        ["a", brief.files[file]],
+        ["b", content3]
+      ]) {
+        mkdirSync(dirname2(join9(dir, side2, file)), { recursive: true });
+        writeFileSync(join9(dir, side2, file), text2);
+      }
+      const args = ["diff", "--no-index", "--no-prefix", "--", "a/" + file];
+      const run2 = spawnSync("git", [...args, "b/" + file], {
+        cwd: dir,
+        encoding: "utf8"
+      });
+      out.push(run2.stdout);
+    }
+    return plain3(out.join(""));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+function matchNotes(event) {
+  const { high, low } = byConfidence(event.matches);
+  const notes = [];
+  if (high.length >= MAX_MATCHES)
+    notes.push(`  **Partial:** this change matches at least ${MAX_MATCHES} call sites and only the first ${MAX_MATCHES} were sent to the model; more may need the same change.`);
+  if (low.length > 0)
+    notes.push(`  ${lowConfidenceLine(event, low.length)}, not sent to the model.`);
+  return notes;
+}
+function filesAndChecks(files) {
+  return [
+    "## Files",
+    "",
+    ...files.map((f) => `- ${code(f)}`),
+    "",
+    "## Verification",
+    "",
+    "Upseam ran no tests; the checks of this pull request run them."
+  ];
+}
+function directBody(group3, files) {
+  return [
+    "<!-- upseam:fix -->",
+    ...directSection(group3),
+    "",
+    ...filesAndChecks(files)
+  ].join("\n");
+}
+function prBody(brief, files, model, maskedSecrets) {
+  const events = brief.events.flatMap((e) => [
+    `- [${label(e.title)}](${e.changelog}) (${changeType(e)})`,
+    `  ${label(e.summary)}`,
+    ...matchNotes(e)
+  ]);
+  const pin = pinnedAt(brief);
+  const title = providers[brief.provider]?.title ?? brief.provider;
+  return [
+    "<!-- upseam:fix -->",
+    pin ? `${title} removed this in API version ${brief.version}, at or before your pin ${pin}, and the code still references it. Upseam updates this code.` : `Upseam updates this code for ${title} API version ${brief.version}.`,
+    "",
+    "## API changes",
+    "",
+    ...events,
+    "",
+    ...filesAndChecks(files),
+    "",
+    `The change was written by ${code(model)}, the model you chose, called with your own API key. Review it before merging.`,
+    ...maskedLine(maskedSecrets)
+  ].join("\n");
+}
+var init_text3 = __esm({
+  "packages/cli/dist/src/commands/fix/text.js"() {
+    "use strict";
+    init_src4();
+    init_src5();
+    init_clean();
+    init_brief2();
+  }
+});
+
+// packages/cli/dist/src/github.js
+import { execFileSync } from "node:child_process";
+function isReport(issue) {
+  const trusted = issue.user?.type === "Bot" || TRUSTED.includes(issue.author_association);
+  return !issue.pull_request && trusted && (issue.body ?? "").startsWith(MARKER);
+}
+function sameReport(a, b) {
+  const findings2 = (body) => body.replace(/\r\n/g, "\n").split(`
+${TRAILER}`)[0].replace(/\/(blob|commit)\/[0-9a-f]{40}\b/g, "/$1/");
+  return findings2(a) === findings2(b);
+}
+function requester(token, send = fetch) {
+  return async (url, method = "GET", payload) => {
+    const response = await send(url, {
+      method,
+      headers: {
+        authorization: `Bearer ${token}`,
+        accept: "application/vnd.github+json",
+        "x-github-api-version": "2022-11-28",
+        "user-agent": "upseam"
+      },
+      body: payload && JSON.stringify(payload),
+      signal: AbortSignal.timeout(TIMEOUT)
+    });
+    if (!response.ok) {
+      const text2 = await response.text();
+      const { status: status2 } = response;
+      const message = `GitHub ${method} ${new URL(url).pathname}: ${status2} ${text2.slice(0, 200)}`;
+      throw Object.assign(new Error(message), { status: status2 });
+    }
+    return response;
+  };
+}
+async function upsertIssue(options2) {
+  const { apiUrl, token, repo, title, body } = options2;
+  const call2 = requester(token, options2.fetch);
+  const issues = `${apiUrl.replace(/\/$/, "")}/repos/${repo}/issues`;
+  let next = `${issues}?state=all&per_page=100`;
+  while (next) {
+    const response = await call2(next);
+    const found = (await response.json()).find(isReport);
+    if (found) {
+      const { number, html_url: url } = found;
+      if (sameReport(found.body ?? "", body)) {
+        return { action: "unchanged", number, url };
+      }
+      await call2(`${issues}/${number}`, "PATCH", { body });
+      return { action: "updated", number, url };
+    }
+    next = /<([^>]+)>;\s*rel="next"/.exec(response.headers.get("link") ?? "")?.[1];
+  }
+  if (options2.create === false)
+    return null;
+  const created = await (await call2(issues, "POST", { title, body })).json();
+  return { action: "created", number: created.number, url: created.html_url };
+}
+function commitOf(path2, repo) {
+  const git3 = (...args) => execFileSync("git", ["-C", path2, "rev-parse", ...args], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"]
+  }).trim();
+  let sha, prefix;
+  try {
+    [sha, prefix] = [git3("HEAD"), git3("--show-prefix")];
+  } catch {
+    return void 0;
+  }
+  const server3 = process.env.GITHUB_SERVER_URL ?? "https://github.com";
+  return { url: `${server3.replace(/\/$/, "")}/${repo}`, sha, prefix };
+}
+var TRUSTED, TIMEOUT;
+var init_github = __esm({
+  "packages/cli/dist/src/github.js"() {
+    "use strict";
+    init_src5();
+    TRUSTED = ["OWNER", "MEMBER", "COLLABORATOR"];
+    TIMEOUT = 12e4;
+  }
+});
+
+// packages/cli/dist/src/commands/fix/pr.js
+import { execFileSync as execFileSync2 } from "node:child_process";
+function branchName(provider, version2) {
+  return `upseam/${provider}-${version2}`;
+}
+function git(cwd, ...args) {
+  return execFileSync2("git", ["-C", cwd, ...args], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"]
+  }).trim();
+}
+function currentBranch(cwd) {
+  const name = git(cwd, "rev-parse", "--abbrev-ref", "HEAD");
+  return name === "HEAD" ? void 0 : name;
+}
+function dirty(cwd, files) {
+  return git(cwd, "status", "--porcelain", "--", ...files).split("\n").filter(Boolean);
+}
+async function call(gh, path2, method = "GET", payload) {
+  const url = `${gh.apiUrl.replace(/\/$/, "")}/repos/${gh.repo}${path2}`;
+  return (await requester(gh.token, gh.fetch)(url, method, payload)).json();
+}
+async function findPull(gh, branch2) {
+  const owner = gh.repo.split("/")[0];
+  const head = encodeURIComponent(`${owner}:${branch2}`);
+  const pulls = await call(gh, `/pulls?head=${head}&state=all`);
+  return pulls[0];
+}
+async function openPull(gh, pull) {
+  return await call(gh, "/pulls", "POST", pull);
+}
+var init_pr = __esm({
+  "packages/cli/dist/src/commands/fix/pr.js"() {
+    "use strict";
+    init_github();
+  }
+});
+
+// packages/cli/dist/src/commands/fix/publish.js
+import { execFileSync as execFileSync3 } from "node:child_process";
+import { mkdtempSync as mkdtempSync2, rmSync as rmSync2 } from "node:fs";
+import { tmpdir as tmpdir2 } from "node:os";
+import { isAbsolute, join as join10, resolve as resolve2 } from "node:path";
+import { pathToFileURL } from "node:url";
+function remoteUrl(root) {
+  const url = git(root, "remote", "get-url", "origin");
+  const ssh = SSH.exec(url);
+  if (ssh && server2() === "https://github.com")
+    return `https://github.com/${ssh[1]}.git`;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(url) || /^[^/]+@[^/]+:/.test(url))
+    return url;
+  return pathToFileURL(isAbsolute(url) ? url : resolve2(root, url)).href;
+}
+function identity(root) {
+  try {
+    return [
+      git(root, "config", "user.name"),
+      git(root, "config", "user.email")
+    ];
+  } catch {
+    return BOT;
+  }
+}
+function server2() {
+  return new URL(process.env.GITHUB_SERVER_URL ?? "https://github.com").origin;
+}
+function cleanEnv(home, url, token) {
+  const config = [
+    ["core.hooksPath", "/dev/null"],
+    ["core.fsmonitor", ""],
+    ["core.sshCommand", "ssh"],
+    ["http.proxy", ""],
+    ["http.sslVerify", "true"],
+    ["protocol.ext.allow", "never"]
+  ];
+  const https = /^https:\/\//i.test(url) && new URL(url).origin === server2();
+  if (token && https) {
+    const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
+    config.push([
+      `http.${server2()}/.extraheader`,
+      `AUTHORIZATION: basic ${basic}`
+    ]);
+  }
+  return {
+    PATH: process.env.PATH,
+    HOME: home,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_CONFIG_COUNT: String(config.length),
+    ...Object.fromEntries(config.flatMap(([key2, value2], i) => [
+      [`GIT_CONFIG_KEY_${i}`, key2],
+      [`GIT_CONFIG_VALUE_${i}`, value2]
+    ]))
+  };
+}
+function foreign(branch2, lease) {
+  const why = lease ? "is not where Upseam left it: it has commits Upseam did not push" : "already exists with commits Upseam did not push";
+  return new InspectError(`${branch2} ${why}; delete the branch or merge its pull request first; nothing pushed`, 1);
+}
+function pushBranch(push) {
+  try {
+    return cleanPush({ ...push, lease: "" });
+  } catch (error) {
+    if (error instanceof InspectError)
+      throw error;
+    throw new InspectError(`push to ${push.branch} failed: the token cannot push (contents: write), or ${push.base} is not on GitHub yet (push your branch first); nothing pushed`, 1);
+  }
+}
+function cleanPush(push) {
+  const home = mkdtempSync2(join10(tmpdir2(), "upseam-push-"));
+  const repo = join10(home, "repo");
+  const [name, email] = push.identity;
+  const env = {
+    ...cleanEnv(home, push.url, push.token),
+    GIT_AUTHOR_NAME: name,
+    GIT_AUTHOR_EMAIL: email,
+    GIT_COMMITTER_NAME: name,
+    GIT_COMMITTER_EMAIL: email
+  };
+  const run2 = (args, input) => execFileSync3("git", ["-C", repo, ...args], {
+    env,
+    input,
+    encoding: "utf8",
+    stdio: ["pipe", "pipe", "pipe"]
+  }).trim();
+  try {
+    execFileSync3("git", ["init", "-q", repo], { env, stdio: "ignore" });
+    run2(["fetch", "-q", "--no-tags", "--depth=1", push.url, push.base]);
+    run2(["read-tree", push.base]);
+    for (const [path2, content3] of Object.entries(push.files)) {
+      const [mode] = run2(["ls-tree", push.base, "--", path2]).split(" ");
+      if (!mode || !REGULAR.has(mode))
+        throw new InspectError(`${path2} is not a regular file at ${push.base}`, 1);
+      const blob = run2(["hash-object", "-w", "--no-filters", "--stdin"], content3);
+      run2(["update-index", "--cacheinfo", `${mode},${blob},${path2}`]);
+    }
+    const tree3 = run2(["write-tree"]);
+    const commit = run2(["commit-tree", tree3, "-p", push.base, "-F", "-"], push.message);
+    const ref = `refs/heads/${push.branch}`;
+    const now = run2(["ls-remote", push.url, ref]).split("	")[0] ?? "";
+    if (now !== push.lease)
+      throw foreign(push.branch, push.lease);
+    run2([
+      "push",
+      "-q",
+      "--no-verify",
+      `--force-with-lease=${ref}:${push.lease}`,
+      push.url,
+      `${commit}:refs/heads/${push.branch}`
+    ]);
+    return commit;
+  } finally {
+    rmSync2(home, { recursive: true, force: true });
+  }
+}
+var BOT, REGULAR, SSH;
+var init_publish = __esm({
+  "packages/cli/dist/src/commands/fix/publish.js"() {
+    "use strict";
+    init_src5();
+    init_pr();
+    BOT = [
+      "github-actions[bot]",
+      "41898282+github-actions[bot]@users.noreply.github.com"
+    ];
+    REGULAR = /* @__PURE__ */ new Set(["100644", "100755"]);
+    SSH = /^(?:ssh:\/\/)?git@github\.com[:/]([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/;
+  }
+});
+
+// packages/cli/dist/src/commands/fix/safety.js
+function maskedNote(count) {
+  if (count === 0)
+    return null;
+  const what = count === 1 ? "1 likely secret" : `${count} likely secrets`;
+  return `masked ${what} before the model saw the files`;
+}
+function unmasked(brief, files) {
+  const restored = restoreSecrets(brief, files);
+  if (restored.ok)
+    return restored.files;
+  throw new InspectError(`the secrets gate rejected the patch in ${restored.file}: ${restored.reason}; nothing pushed`, 1);
+}
+function gated(brief, files) {
+  const gate = checkPatch(brief, files);
+  if (gate.ok)
+    return gate.files;
+  const where = gate.file ? ` in ${gate.file}${gate.line ? `:${gate.line}` : ""}` : "";
+  throw new InspectError(`the ${gate.gate} gate rejected the patch${where}: ${gate.reason}; nothing pushed`, 1);
+}
+function gateBrief(brief, repo) {
+  const { provider, version: version2, events, files, masking, prompt } = brief;
+  const key2 = `${provider}/${version2}`;
+  const group3 = { key: key2, kind: "fix", repo, provider, from: null };
+  return {
+    group: { ...group3, to: version2, events, needsHuman: [] },
+    files,
+    masking,
+    prompt
+  };
+}
+var init_safety = __esm({
+  "packages/cli/dist/src/commands/fix/safety.js"() {
+    "use strict";
+    init_src5();
+  }
+});
+
+// packages/cli/dist/src/commands/fix/stage.js
+import { createHash as createHash2 } from "node:crypto";
+import { existsSync as existsSync3, lstatSync, mkdirSync as mkdirSync2, readdirSync as readdirSync6, readFileSync as readFileSync8, writeFileSync as writeFileSync2 } from "node:fs";
+import { join as join11, resolve as resolve3 } from "node:path";
+function bytes2(path2) {
+  const stat = lstatSync(path2, { throwIfNoEntry: false });
+  if (!stat)
+    return "-";
+  if (!stat.isFile())
+    return `${stat.mode}`;
+  return sha256(readFileSync8(path2));
+}
+function tree(dir) {
+  if (!existsSync3(dir))
+    return [];
+  return readdirSync6(dir, { recursive: true, encoding: "utf8" }).sort().map((name) => `${name}:${bytes2(join11(dir, name))}`);
+}
+function guard(root, gitDir, commonDir) {
+  return sha256([
+    ...[".gitattributes"].map((f) => bytes2(join11(root, f))),
+    ...["config", "config.worktree"].map((f) => bytes2(join11(gitDir, f))),
+    ...["config", "info/attributes"].map((f) => bytes2(join11(commonDir, f))),
+    ...tree(join11(commonDir, "hooks"))
+  ].join("\n"));
+}
+function writeStage(root, dir, staged, files) {
+  if (existsSync3(dir) && readdirSync6(dir).length > 0)
+    throw new InspectError(`${dir} is not empty; stage into a new directory`, 2);
+  if (resolve3(dir).startsWith(root + "/"))
+    throw new InspectError(`${dir} is inside the repository; stage outside it`, 2);
+  mkdirSync2(join11(dir, "files"), { recursive: true, mode: 448 });
+  const [gitDir, commonDir] = git(root, "rev-parse", "--absolute-git-dir", "--git-common-dir").split("\n");
+  const common = resolve3(root, commonDir);
+  const list2 = Object.entries(files).map(([path2, content3], i) => {
+    writeFileSync2(join11(dir, "files", String(i)), content3);
+    return { path: path2, sha256: sha256(content3), blob: `files/${i}` };
+  });
+  for (const [path2, content3] of Object.entries(files))
+    writeFileSync2(join11(root, path2), content3);
+  const manifest = {
+    upseam: 1,
+    ...staged,
+    gitDir,
+    commonDir: common,
+    guard: guard(root, gitDir, common),
+    files: list2
+  };
+  const text2 = JSON.stringify(manifest, null, 2);
+  writeFileSync2(join11(dir, "manifest.json"), text2);
+  return sha256(text2);
+}
+function readStage(root, dir, digest) {
+  const text2 = readFileSync8(join11(dir, "manifest.json"));
+  if (sha256(text2) !== digest)
+    throw refuse("the manifest changed after the generate step");
+  const manifest = JSON.parse(text2.toString("utf8"));
+  const files = {};
+  for (const { path: path2, sha256: hash, blob } of manifest.files) {
+    const content3 = readFileSync8(join11(dir, blob));
+    if (sha256(content3) !== hash)
+      throw refuse(`the staged copy of ${path2} changed after the generate step`);
+    const full = resolve3(root, path2);
+    const stat = lstatSync(full, { throwIfNoEntry: false });
+    if (!stat?.isFile() || sha256(readFileSync8(full)) !== hash)
+      throw refuse(`${path2} changed after the gates passed`);
+    files[path2] = content3.toString("utf8");
+  }
+  if (guard(root, manifest.gitDir, manifest.commonDir) !== manifest.guard)
+    throw refuse("the git config, hooks or attributes changed after the generate step");
+  return { manifest, files };
+}
+async function publishStage(root, dir, digest, github, body, log) {
+  const { manifest, files } = readStage(root, dir, digest);
+  const existing2 = await findPull(github, manifest.branch);
+  if (existing2) {
+    log(`pull request #${existing2.number} exists for ${manifest.branch}; skipping`);
+    return "none";
+  }
+  const touched = Object.keys(files);
+  pushBranch({
+    url: manifest.url,
+    base: manifest.base,
+    branch: manifest.branch,
+    files,
+    message: manifest.title,
+    identity: manifest.identity,
+    token: github.token
+  });
+  const pull = await openPull(github, {
+    title: manifest.title,
+    head: manifest.branch,
+    base: manifest.baseBranch,
+    body: body(manifest, touched)
+  });
+  log(`opened pull request #${pull.number}: ${pull.html_url}`);
+  return "opened";
+}
+var sha256, refuse;
+var init_stage = __esm({
+  "packages/cli/dist/src/commands/fix/stage.js"() {
+    "use strict";
+    init_src5();
+    init_pr();
+    init_publish();
+    sha256 = (data) => createHash2("sha256").update(data).digest("hex");
+    refuse = (why) => new InspectError(`${why}; nothing pushed`, 1);
+  }
+});
+
+// packages/cli/dist/src/commands/fix/files.js
+import { lstatSync as lstatSync2, readFileSync as readFileSync9 } from "node:fs";
+import { resolve as resolve4, sep } from "node:path";
+function readBrief(root, files) {
+  const out = {};
+  for (const file of files) {
+    const path2 = resolve4(root, file);
+    if (!path2.startsWith(root + sep))
+      throw new BriefError(`${file} is outside the repository`);
+    const stat = lstatSync2(path2, { throwIfNoEntry: false });
+    if (!stat?.isFile() || stat.size > MAX_FILE)
+      throw new BriefError(`${file} is not a regular file under 1 MB`);
+    out[file] = readFileSync9(path2, "utf8");
+  }
+  return out;
+}
+var MAX_FILE;
+var init_files2 = __esm({
+  "packages/cli/dist/src/commands/fix/files.js"() {
+    "use strict";
+    init_src5();
+    MAX_FILE = 1024 * 1024;
+  }
+});
+
+// packages/cli/dist/src/commands/fix/jobs.js
+function retirementGroups(results, repo) {
+  const versionless = results.filter((r) => providers[r.provider]?.versionless);
+  return groupChanges(versionless, repo);
+}
+function versionOf(group3) {
+  const event = group3.events[0] ?? group3.needsHuman[0]?.event;
+  return event?.version ?? group3.to;
+}
+function directJob(root, group3, repo) {
+  let files;
+  let gate;
+  try {
+    files = readBrief(root, briefFiles(group3));
+    gate = buildBrief(group3, files, {});
+  } catch (error) {
+    if (error instanceof BriefError)
+      throw new InspectError(error.message, 1);
+    throw error;
+  }
+  if (!replaceModelIds(group3, files))
+    throw new InspectError(`${group3.from ?? group3.to} is not on the matched lines any more`, 1);
+  return {
+    provider: group3.provider,
+    version: versionOf(group3),
+    events: group3.events,
+    files: gate.files,
+    masking: gate.masking,
+    prompt: gate.prompt,
+    branch: branchName(group3.provider, versionOf(group3)),
+    title: directTitle(group3),
+    gate: { ...gate, group: { ...gate.group, repo } },
+    direct: group3
+  };
+}
+function retirementTarget(root, group3, repo) {
+  const direct = directReplacement(group3);
+  const reason = group3.needsHuman[0]?.reason ?? null;
+  return {
+    branch: branchName(group3.provider, versionOf(group3)),
+    human: direct ? null : reason ?? "it is not a direct replacement named by the vendor",
+    needsModel: false,
+    summary: direct ? directLines(group3) : [directTitle(group3)],
+    build: () => directJob(root, group3, repo)
+  };
+}
+function modelTitle(candidate) {
+  return pinnedAt(candidate) ? `Replace ${candidate.provider} API removed in version ${candidate.version}` : `Update ${candidate.provider} code for API version ${candidate.version}`;
+}
+function modelTarget(root, candidate, repo) {
+  const branch2 = branchName(candidate.provider, candidate.version);
+  const title = modelTitle(candidate);
+  const count = candidate.events.length;
+  return {
+    branch: branch2,
+    human: needsHuman(candidate),
+    needsModel: true,
+    summary: [
+      `${title}: ${count} ${count === 1 ? "change" : "changes"}, written by your model`
+    ],
+    build: () => {
+      const brief = buildBrief2(root, candidate);
+      return {
+        ...brief,
+        branch: branch2,
+        title,
+        gate: gateBrief(brief, repo)
+      };
+    }
+  };
+}
+function targets3(root, results, repo) {
+  return [
+    ...retirementGroups(results, repo).map((g) => retirementTarget(root, g, repo)),
+    ...candidates2(results).map((c) => modelTarget(root, c, repo))
+  ];
+}
+var init_jobs = __esm({
+  "packages/cli/dist/src/commands/fix/jobs.js"() {
+    "use strict";
+    init_src4();
+    init_src5();
+    init_brief2();
+    init_files2();
+    init_pr();
+    init_safety();
+  }
+});
+
+// packages/cli/dist/src/commands/fix/pick.js
+import { resolve as resolve5 } from "node:path";
+function inspect2(options2) {
+  return inspectRepo(options2.tree ?? directoryTree(resolve5(options2.path)), Object.values(providers), options2.changes ? { changes: options2.changes } : {});
+}
+async function openPulls(path2, github) {
+  const branches = [];
+  for (const target2 of targets3(resolve5(path2), inspect2({ path: path2 }), github.repo))
+    if (await findPull(github, target2.branch))
+      branches.push(target2.branch);
+  return branches;
+}
+async function skipped(target2, options2, log) {
+  const { github } = options2;
+  const existing2 = github && await findPull(github, target2.branch);
+  if (existing2 || options2.skip?.includes(target2.branch)) {
+    const which = existing2 ? `pull request #${existing2.number}` : "a pull request";
+    log(`${which} exists for ${target2.branch}; skipping`);
+    return true;
+  }
+  const why = target2.human?.replace(/\.$/, "");
+  if (why)
+    log(`${target2.branch}: needs a human: ${why}; skipping`);
+  else if (target2.needsModel && !options2.ask)
+    log(`${target2.branch}: needs your model to write the change, and ${options2.keyName ?? "no model key"} is not set; skipping`);
+  return Boolean(why) || target2.needsModel && !options2.ask;
+}
+async function pick(found, options2, log) {
+  for (const target2 of found) {
+    if (await skipped(target2, options2, log))
+      continue;
+    try {
+      const job = target2.build();
+      target2.summary.forEach(log);
+      return job;
+    } catch (error) {
+      if (!(error instanceof InspectError))
+        throw error;
+      log(`${target2.branch}: ${error.message}; skipping`);
+    }
+  }
+  return void 0;
+}
+var init_pick = __esm({
+  "packages/cli/dist/src/commands/fix/pick.js"() {
+    "use strict";
+    init_src4();
+    init_src5();
+    init_jobs();
+    init_pr();
+  }
+});
+
+// packages/cli/dist/src/commands/fix/fix.js
+import { resolve as resolve6 } from "node:path";
+async function patch(job, options2) {
+  if (job.direct)
+    return replaceModelIds(job.direct, job.files);
+  return parseReply2(await options2.ask(job.prompt), job);
+}
+async function fix(options2) {
+  const log = options2.log ?? say;
+  const path2 = resolve6(options2.path);
+  const { github, stage } = options2;
+  const writes = Boolean(github || stage);
+  const base = writes ? currentBranch(path2) : "";
+  if (base === void 0) {
+    log("HEAD is detached (for example a pull_request run); upseam fix runs on a branch checkout (schedule, push, workflow_dispatch); skipped");
+    return "none";
+  }
+  const repo = github?.repo ?? options2.repo ?? "local/repository";
+  const found = targets3(path2, inspect2(options2), repo);
+  const job = await pick(found, options2, log);
+  if (!job) {
+    log(found.length > 0 ? "no fixable change left (existing pull requests, changes that need a human or a model key, oversized files); nothing to fix" : "no breaking mechanical change matched in code; nothing to fix");
+    return "none";
+  }
+  const pin = pinnedAt(job);
+  if (pin)
+    log(`pre-pin: ${prePinFlag(job.events[0], pin)} (${job.provider} ${job.version})`);
+  const files = Object.keys(job.files);
+  if (writes && dirty(path2, files).length > 0) {
+    throw new HintedError(`uncommitted changes in ${files.join(", ")}`, "commit or stash them first", 1);
+  }
+  if (options2.confirm && !await options2.confirm(job)) {
+    log("nothing changed");
+    return "declined";
+  }
+  const maskedSecrets = job.direct ? 0 : job.masking.secrets.size;
+  const masked = maskedNote(maskedSecrets);
+  if (masked)
+    log(masked);
+  const reply = await patch(job, options2);
+  if (Object.keys(reply).length === 0) {
+    log("the model proposed no change; no patch");
+    return "none";
+  }
+  const changed2 = unmasked(job, reply);
+  const touched = gated(job.gate, changed2);
+  const gatedFiles = Object.fromEntries(touched.map((f) => [f, changed2[f]]));
+  if (!stage)
+    log(diff2(job, changed2));
+  if (!github && !stage)
+    return "dry-run";
+  const commit = {
+    url: remoteUrl(path2),
+    base: git(path2, "rev-parse", "HEAD"),
+    identity: identity(path2)
+  };
+  if (stage) {
+    const digest = writeStage(path2, resolve6(stage), {
+      provider: job.provider,
+      version: job.version,
+      events: job.events,
+      ...job.direct && { direct: job.direct },
+      branch: job.branch,
+      baseBranch: base,
+      title: job.title,
+      model: job.direct ? "none" : options2.model,
+      maskedSecrets,
+      ...commit
+    }, gatedFiles);
+    log(`staged ${touched.join(", ")} for ${job.branch}; manifest sha256 ${digest}`);
+    return "staged";
+  }
+  pushBranch({
+    ...commit,
+    branch: job.branch,
+    files: gatedFiles,
+    message: job.title,
+    token: github.token
+  });
+  const body = bodyOf({ ...job, model: options2.model, maskedSecrets }, touched);
+  const pull = await openPull(github, {
+    title: job.title,
+    head: job.branch,
+    base,
+    body
+  });
+  if (options2.opened)
+    options2.opened(pull);
+  else
+    log(`opened pull request #${pull.number}: ${pull.html_url}`);
+  return "opened";
+}
+function bodyOf(m, files) {
+  return m.direct ? directBody(m.direct, files) : prBody(m, files, m.model, m.maskedSecrets);
+}
+function publishFix(options2) {
+  return publishStage(resolve6(options2.path), resolve6(options2.dir), options2.digest, options2.github, bodyOf, options2.log ?? say);
+}
+var say;
+var init_fix = __esm({
+  "packages/cli/dist/src/commands/fix/fix.js"() {
+    "use strict";
+    init_brief2();
+    init_src5();
+    init_text3();
+    init_pr();
+    init_publish();
+    init_safety();
+    init_stage();
+    init_jobs();
+    init_pick();
+    init_clean();
+    init_failure();
+    say = (line3) => console.log(plain3(line3));
+  }
+});
+
+// packages/cli/dist/src/commands/fix/edits.js
+import { execFileSync as execFileSync4 } from "node:child_process";
+import { lstatSync as lstatSync3, readFileSync as readFileSync10 } from "node:fs";
+import { resolve as resolve7, sep as sep2 } from "node:path";
+function changed(root) {
+  const status2 = execFileSync4("git", [
+    "-C",
+    root,
+    ...SAFE,
+    "status",
+    "--porcelain=v1",
+    "-z",
+    "--untracked-files=all"
+  ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const entries = status2.split("\0").filter((e) => e.length > 0);
+  if (entries.some((e) => !e.startsWith(" M ")))
+    throw refuse2("your agent created, deleted, renamed or staged a file; Upseam only accepts edits of existing files");
+  return entries.map((e) => e.slice(3));
+}
+function takeEdits(root, sha) {
+  const files = changed(root);
+  if (files.length === 0)
+    return null;
+  if (git(root, ...SAFE, "diff", "--summary", sha, "--", ...files) !== "")
+    throw refuse2("your agent changed the mode of a file");
+  const out = [];
+  for (const path2 of files) {
+    const [mode] = git(root, ...SAFE, "ls-tree", sha, "--", path2).split(" ");
+    if (!mode || !REGULAR2.has(mode))
+      throw refuse2(`${path2} is not a regular file at ${sha}`);
+    const full = resolve7(root, path2);
+    const stat = lstatSync3(full, { throwIfNoEntry: false });
+    if (!full.startsWith(root + sep2) || !stat?.isFile() || stat.size > MAX_FILE2)
+      throw refuse2(`${path2} is not a regular file under 1 MB`);
+    out.push({ path: path2, content: readFileSync10(full, "utf8") });
+  }
+  git(root, ...SAFE, "checkout", "-q", sha, "--", ...files);
+  return JSON.stringify({ files: out });
+}
+var SAFE, REGULAR2, MAX_FILE2, refuse2;
+var init_edits = __esm({
+  "packages/cli/dist/src/commands/fix/edits.js"() {
+    "use strict";
+    init_src5();
+    init_pr();
+    SAFE = [
+      "--literal-pathspecs",
+      "-c",
+      "core.fsmonitor=",
+      "-c",
+      "core.hooksPath=/dev/null"
+    ];
+    REGULAR2 = /* @__PURE__ */ new Set(["100644", "100755"]);
+    MAX_FILE2 = 1024 * 1024;
+    refuse2 = (why) => new InspectError(`${why}; nothing pushed`, 1);
+  }
+});
+
+// packages/cli/dist/src/commands/fix/group.js
+import { writeFileSync as writeFileSync3 } from "node:fs";
+import { resolve as resolve8 } from "node:path";
+function validGroup(key2) {
+  return KEY.test(key2) && key2.length <= 190 && !/\.\.|\/\.|\.lock(?:\/|$)|\.$/.test(`upseam/${key2}`);
+}
+function publish(root, branch2, files, opts, message) {
+  try {
+    cleanPush({
+      url: remoteUrl(root),
+      base: opts.sha,
+      branch: branch2,
+      files,
+      message,
+      identity: identity(root),
+      token: opts.token,
+      lease: opts.head ?? ""
+    });
+  } catch {
+    throw new InspectError(`push to ${branch2} was refused: the branch is not where the Upseam App expects it, or the token cannot push (contents: write); nothing pushed`, 1);
+  }
+}
+async function generateGroup(opts) {
+  const log = opts.log ?? say2;
+  if (!validGroup(opts.group) || !SHA.test(opts.sha))
+    throw new InspectError("malformed group key or SHA", 2);
+  if (opts.head !== void 0 && !SHA.test(opts.head))
+    throw new InspectError("malformed head SHA", 2);
+  if (opts.edits !== void 0 && !INPUT.test(opts.edits))
+    throw new InspectError("malformed dispatch input for --edits", 2);
+  const root = resolve8(opts.path);
+  const at2 = git(root, "rev-parse", "HEAD");
+  if (at2 !== opts.sha)
+    throw new InspectError(`HEAD is ${at2}, but the Upseam App asked for ${opts.sha}; check out github.event.client_payload.sha`, 1);
+  let ask2 = opts.ask;
+  if (opts.edits !== void 0) {
+    const edits = takeEdits(root, opts.sha);
+    if (edits === null) {
+      log(`your agent changed nothing at ${opts.sha}; nothing pushed`);
+      return "none";
+    }
+    ask2 = async () => edits;
+  }
+  const results = inspectRepo(directoryTree(root), Object.values(providers));
+  const group3 = groupChanges(results, opts.repo).find((g) => g.key === opts.group);
+  if (!group3 || !fixable(group3)) {
+    log(`group ${opts.group} has no mechanical change to patch at ${opts.sha}; nothing pushed`);
+    return "none";
+  }
+  let brief;
+  try {
+    brief = buildBrief(group3, readBrief(root, briefFiles(group3)), {});
+  } catch (error) {
+    if (!(error instanceof BriefError))
+      throw error;
+    log(`the brief was not built: ${error.message}; nothing pushed`);
+    return "none";
+  }
+  const direct = opts.edits === void 0 && directReplacement(group3);
+  const masked = maskedNote(brief.masking.secrets.size);
+  if (direct)
+    directLines(group3).forEach(log);
+  else if (opts.edits === void 0 && masked)
+    log(masked);
+  const reply = direct ? { ok: true, files: replaceModelIds(group3, brief.files) ?? {} } : parseReply(await ask2(brief.prompt));
+  if (!reply.ok)
+    throw new InspectError(`${reply.reason}; nothing pushed`, 1);
+  const restored = unmasked(brief, reply.files);
+  const files = gated(brief, restored);
+  const changed2 = Object.fromEntries(files.map((f) => [f, restored[f]]));
+  if (opts.edits !== void 0 && !opts.push)
+    for (const file of files)
+      writeFileSync3(resolve8(root, file), changed2[file]);
+  if (!opts.push) {
+    log(diff2(brief, changed2));
+    return "dry-run";
+  }
+  const branch2 = `upseam/${group3.key}`;
+  const trailer = opts.edits ? `
+
+Upseam-Dispatch: ${opts.edits}` : "";
+  const message = `Update ${group3.provider} code for ${group3.to}
+
+Upseam group ${group3.key}.${trailer}`;
+  publish(root, branch2, changed2, opts, message);
+  log(`pushed ${branch2}; the Upseam App re-checks it and opens the pull request`);
+  return "pushed";
+}
+var say2, KEY, SHA, INPUT;
+var init_group2 = __esm({
+  "packages/cli/dist/src/commands/fix/group.js"() {
+    "use strict";
+    init_src4();
+    init_src5();
+    init_edits();
+    init_files2();
+    init_fix();
+    init_pr();
+    init_publish();
+    init_safety();
+    init_clean();
+    say2 = (line3) => console.log(plain3(line3));
+    KEY = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/;
+    SHA = /^[0-9a-f]{40}$/;
+    INPUT = /^[0-9a-f]{64}$/;
+  }
+});
+
+// packages/cli/dist/src/term/cat-art.js
+var CAT;
+var init_cat_art = __esm({
+  "packages/cli/dist/src/term/cat-art.js"() {
+    "use strict";
+    CAT = {
+      open: [
+        "......................owwo...owo.o......owwo............",
+        "......................owwwo..owoowo....owwwwo...........",
+        ".....................owwwwwo.oowowwoo.owwwwwo...........",
+        ".....................owwkwwwowwwwwwwwowwwkwwo...........",
+        ".....................owkkkwwwwwwwwwwwwwwkkkwo...........",
+        ".....................owkkkwwwwwwwwwwwwwkkkkwo.o.........",
+        ".....................owkkkwwwwwwwwwwwwwwkkkwwowo........",
+        "...................o.owkkwwwwwwwwwwwwwwwwkkwwwo.........",
+        "..................owowwwwwwwkkwwwwkkwwwwwwwwwwo.........",
+        "...................owwwwwkkkwwwwwwwwkkkwwwwwwwo.........",
+        "....................owwwkkkkwwwkkwwwkkkkwwwwwwwo........",
+        "...................owwwkkkkkkwwkkwwkkkkkkwwwwwwo........",
+        ".................oo.owwkwwkkkwwkkwwkwwkkkwwwwwwo........",
+        "................owwowwwkwwkkkwwkkwwkwwkkkwwwwwwo........",
+        ".................oowwwwkkkkkkwwkkwwkkkkkkwwwwwwwo.......",
+        "..................oowwwkkkkkkwwkkwwkkkkkkwwwwwoo........",
+        ".................owwwwwwkkkkwwwkkwwwkkkkwwwwwwwoo.......",
+        "................owwoowwwkkkkkkkkkkkkkkkkkwwwwwwwwo......",
+        ".................ooowwkkkkkkkwwwwwwkkkkkkkwwwwooo.......",
+        ".oooooooooooooooooooookwkwkkkwwwwwwkkkwkwkwwwwo.........",
+        "owwwwwwwwwwwwwwwwwwwwwwkkkkkkkwwwwkkkkkkkkwwwwwo........",
+        "owkkkkkkkkkkkkkkkkkkkkwkkkkkwkkkkkkwkkkkkwwwwwo.........",
+        "owkrrkrkrrkrrkkkrkrrkkwkkkkkwwkkkkwwkkkkkwwwwwo......o..",
+        "owkkkwwwkkkkkwkkkkkkrkwkwwkkwwwwkkkkwkwwkwwwwwo..o.oowoo",
+        "owkkkkkkkkkkkkkkkkkkkkwwwwwkwwkkkkkkwwwwkwwwwwo.owowwwww",
+        "owkkrrrrrrrrrrrrrrrrrkwwwwwkwwkkkkkkwwwwwkwwwo..owowwwww",
+        "owkkrrrrrrrrrrrrrrrrrkwwwwwwwwkkkkkkwwwwwwwwwwoowowwwwww",
+        "owkkrkkrkrkrkrrkkrkkrkwkwwwwwkkkkkkkkwwwwwwwwwwoowwwwwwo",
+        "owkkrrrrrrrrrrrrrrrrrkwkwwwwwkkkkkkkkwwwwkwwwwo.owwwwwoo",
+        "owkkkkkkkkkkkkkkkkkkkkwkwkkkwkkkkkkkkkkkkwwwwwo.owwwwoow",
+        "owkkkwwwkwwwkwwwwkkkrkwkwkkkwkkkkkkkkkwwwwwwwwwoowwwwowo",
+        "owkkkkkkkkkkkkkkkkkkkkwkwkkkwkkkkkkkkkwwwwwwwwo.owwwo.o.",
+        "owkkkwwwwwwkwwwwwwwwkkwkwkkwwkkkkkkkkkkwkwwwwwo.owwwo...",
+        "owkkkkkkkkkkkkkkkkkkkkwkwkwwwkkkkkkkkwwwwwwwwwoowwwwo...",
+        "owkkkwwwwwwkwwwwkrrrrkwkwkwwwwkkkkkkwwwwwwwwwwowwwwwo...",
+        "owwwwwwwwwwwwwwwwwwwwwwkwwwwwwkkkkwwwwwwwwwwwwwwwwwwo...",
+        ".owkkkkkkkkkkkkkkkkkkkkkkkkwwwwwkkkkkwwwwwwwwwwwwwwo....",
+        ".owkkkkkkkkkkkkkkkkwwwwwwkkkkkkkkwkkkkwwwwwwwwwwwoo.....",
+        ".owkkkkkkkkkkkkkkkkkkkkkkkkkkkkwwwkkkkwwwwwwwwwoo.......",
+        "..owwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwooo........."
+      ],
+      blink: [
+        "......................owwo...owo.o......owwo............",
+        "......................owwwo..owoowo....owwwwo...........",
+        ".....................owwwwwo.oowowwoo.owwwwwo...........",
+        ".....................owwkwwwowwwwwwwwowwwkwwo...........",
+        ".....................owkkkwwwwwwwwwwwwwwkkkwo...........",
+        ".....................owkkkwwwwwwwwwwwwwkkkkwo.o.........",
+        ".....................owkkkwwwwwwwwwwwwwwkkkwwowo........",
+        "...................o.owkkwwwwwwwwwwwwwwwwkkwwwo.........",
+        "..................owowwwwwwwkkwwwwkkwwwwwwwwwwo.........",
+        "...................owwwwwkkkwwwwwwwwkkkwwwwwwwo.........",
+        "....................owwwwwwwwwwkkwwwwwwwwwwwwwwo........",
+        "...................owwwwkwwwwwwkkwwwwwwkwwwwwwwo........",
+        ".................oo.owwwwkkwwwwkkwwwwkkwwwwwwwwo........",
+        "................owwowwwwwwwkkwwkkwwkkwwwwwwwwwwo........",
+        ".................oowwwwwwkkwwwwkkwwwwkkwwwwwwwwwo.......",
+        "..................oowwwwkwwwwwwkkwwwwwwkwwwwwwoo........",
+        ".................owwwwwwwwwwwwwkkwwwwwwwwwwwwwwoo.......",
+        "................owwoowwwkkkkkkkkkkkkkkkkkwwwwwwwwo......",
+        ".................ooowwkkkkkkkwwwwwwkkkkkkkwwwwooo.......",
+        ".oooooooooooooooooooookwkwkkkwwwwwwkkkwkwkwwwwo.........",
+        "owwwwwwwwwwwwwwwwwwwwwwkkkkkkkwwwwkkkkkkkkwwwwwo........",
+        "owkkkkkkkkkkkkkkkkkkkkwkkkkkwkkkkkkwkkkkkwwwwwo.........",
+        "owkrrkrkrrkrrkkkrkrrkkwkkkkkwwkkkkwwkkkkkwwwwwo......o..",
+        "owkkkwwwkkkkkwkkkkkkrkwkwwkkwwwwkkkkwkwwkwwwwwo..o.oowoo",
+        "owkkkkkkkkkkkkkkkkkkkkwwwwwkwwkkkkkkwwwwkwwwwwo.owowwwww",
+        "owkkrrrrrrrrrrrrrrrrrkwwwwwkwwkkkkkkwwwwwkwwwo..owowwwww",
+        "owkkrrrrrrrrrrrrrrrrrkwwwwwwwwkkkkkkwwwwwwwwwwoowowwwwww",
+        "owkkrkkrkrkrkrrkkrkkrkwkwwwwwkkkkkkkkwwwwwwwwwwoowwwwwwo",
+        "owkkrrrrrrrrrrrrrrrrrkwkwwwwwkkkkkkkkwwwwkwwwwo.owwwwwoo",
+        "owkkkkkkkkkkkkkkkkkkkkwkwkkkwkkkkkkkkkkkkwwwwwo.owwwwoow",
+        "owkkkwwwkwwwkwwwwkkkrkwkwkkkwkkkkkkkkkwwwwwwwwwoowwwwowo",
+        "owkkkkkkkkkkkkkkkkkkkkwkwkkkwkkkkkkkkkwwwwwwwwo.owwwo.o.",
+        "owkkkwwwwwwkwwwwwwwwkkwkwkkwwkkkkkkkkkkwkwwwwwo.owwwo...",
+        "owkkkkkkkkkkkkkkkkkkkkwkwkwwwkkkkkkkkwwwwwwwwwoowwwwo...",
+        "owkkkwwwwwwkwwwwkrrrrkwkwkwwwwkkkkkkwwwwwwwwwwowwwwwo...",
+        "owwwwwwwwwwwwwwwwwwwwwwkwwwwwwkkkkwwwwwwwwwwwwwwwwwwo...",
+        ".owkkkkkkkkkkkkkkkkkkkkkkkkwwwwwkkkkkwwwwwwwwwwwwwwo....",
+        ".owkkkkkkkkkkkkkkkkwwwwwwkkkkkkkkwkkkkwwwwwwwwwwwoo.....",
+        ".owkkkkkkkkkkkkkkkkkkkkkkkkkkkkwwwkkkkwwwwwwwwwoo.......",
+        "..owwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwooo........."
+      ]
     };
   }
 });
@@ -224277,6 +225650,197 @@ var init_width = __esm({
     RESET = `${ESC}[0m`;
     UNLINK = `${ESC}]8;;${ESC}\\`;
     DEFAULT_COLUMNS = 80;
+  }
+});
+
+// packages/cli/dist/src/term/cat.js
+function widthOfCat(sprite) {
+  return sprite.open[0].length;
+}
+function cellOf(top, bottom) {
+  if (top === EMPTY && bottom === EMPTY)
+    return null;
+  if (bottom === EMPTY)
+    return { char: "\u2580", fg: top, bg: EMPTY };
+  if (top === EMPTY)
+    return { char: "\u2584", fg: bottom, bg: EMPTY };
+  if (top === bottom)
+    return { char: "\u2588", fg: top, bg: EMPTY };
+  return { char: "\u2580", fg: top, bg: bottom };
+}
+function colourLine(p, top, bottom) {
+  const cells2 = [...top].map((t, x) => cellOf(t, bottom[x]));
+  let line3 = "";
+  let run2 = null;
+  const flush = () => {
+    if (!run2)
+      return;
+    const bg = run2.bg === EMPTY ? null : INKS[run2.bg];
+    line3 += p.pixels(run2.char, INKS[run2.fg], bg);
+    run2 = null;
+  };
+  for (const cell of cells2) {
+    if (!cell) {
+      flush();
+      line3 += " ";
+    } else if (run2 && run2.fg === cell.fg && run2.bg === cell.bg) {
+      run2.char += cell.char;
+    } else {
+      flush();
+      run2 = { ...cell };
+    }
+  }
+  flush();
+  return line3;
+}
+function asciiLine(top, bottom) {
+  const ink = (pixel) => LINE_ART.has(pixel) ? "1" : "0";
+  return [...top].map((t, x) => ASCII[ink(t) + ink(bottom[x])]).join("");
+}
+function drawCat(p, sprite, blink = false) {
+  const rows3 = blink && sprite.blink ? sprite.blink : sprite.open;
+  const lines2 = [];
+  for (let y = 0; y < rows3.length; y += 2) {
+    const [top, bottom] = [rows3[y], rows3[y + 1]];
+    lines2.push(p.term.depth === "none" ? asciiLine(top, bottom) : colourLine(p, top, bottom));
+  }
+  return lines2;
+}
+function beside(left, right, from = 0, gap = 2) {
+  const width = Math.max(...left.map(widthOf));
+  const height = Math.max(left.length, from + right.length);
+  return Array.from({ length: height }, (_, i) => {
+    const art = pad(left[i] ?? "", width);
+    const text2 = right[i - from] ?? "";
+    return `  ${art}${text2 ? " ".repeat(gap) + text2 : ""}`.trimEnd();
+  });
+}
+var HEAD_ROWS, HEAD_COLUMNS, HEAD, EMPTY, INKS, LINE_ART, ASCII;
+var init_cat = __esm({
+  "packages/cli/dist/src/term/cat.js"() {
+    "use strict";
+    init_cat_art();
+    init_width();
+    HEAD_ROWS = 28;
+    HEAD_COLUMNS = [12, 51];
+    HEAD = {
+      open: CAT.open.slice(0, HEAD_ROWS).map((row) => row.slice(HEAD_COLUMNS[0], HEAD_COLUMNS[1]))
+    };
+    EMPTY = ".";
+    INKS = {
+      w: [97, 255, [238, 238, 238]],
+      k: [30, 235, [43, 40, 39]],
+      o: [90, 243, [118, 113, 110]],
+      r: [31, 160, [216, 58, 43]]
+    };
+    LINE_ART = /* @__PURE__ */ new Set(["k", "o", "r"]);
+    ASCII = {
+      "11": "@",
+      "10": "'",
+      "01": ".",
+      "00": " "
+    };
+  }
+});
+
+// packages/cli/dist/src/term/diff.js
+function line(p, text2) {
+  if (/^(diff |index |new file|deleted file)/.test(text2))
+    return p.dim(text2);
+  if (/^(---|\+\+\+) /.test(text2))
+    return p.bold(text2);
+  if (text2.startsWith("@@"))
+    return p.tone("line", text2);
+  if (text2.startsWith("+"))
+    return p.tone("accent", text2);
+  if (text2.startsWith("-"))
+    return p.tone("red", text2);
+  return text2;
+}
+function diff3(p, text2) {
+  return text2.split("\n").map((l) => line(p, l)).join("\n");
+}
+var init_diff2 = __esm({
+  "packages/cli/dist/src/term/diff.js"() {
+    "use strict";
+  }
+});
+
+// packages/cli/dist/src/commands/fix/human.js
+function fixLine(p, line3, columns = Infinity) {
+  const text2 = plain3(line3);
+  if (text2.startsWith("diff "))
+    return diff3(p, text2);
+  if (/^https?:\/\/\S+$/.test(text2))
+    return `    ${p.link(text2)}`;
+  return hang(`  ${p.dim("\u203A")} `, "    ", text2, columns).join("\n");
+}
+function question2(p, text2) {
+  return p ? `  ${p.tone("amber", "?")} ${text2}` : text2;
+}
+var DRY_RUN;
+var init_human = __esm({
+  "packages/cli/dist/src/commands/fix/human.js"() {
+    "use strict";
+    init_clean();
+    init_diff2();
+    init_width();
+    DRY_RUN = "dry run: the patch is printed, nothing is written";
+  }
+});
+
+// packages/cli/dist/src/commands/fix/local.js
+import { createInterface } from "node:readline/promises";
+function originUrl(root) {
+  try {
+    return git(root, "remote", "get-url", "origin");
+  } catch {
+    return "";
+  }
+}
+function originRepo(root) {
+  const url = originUrl(root);
+  const repo = GITHUB.exec(url)?.[1];
+  const dots = repo?.split("/").some((part) => /^\.+$/.test(part));
+  if (repo && !dots)
+    return repo;
+  throw new HintedError("the origin remote is not a github.com repository", "pass --github <owner/repo>, or --dry-run to only print the patch", 1);
+}
+function confirmer(repo, p) {
+  return async (job) => {
+    const rl = createInterface({
+      input: process.stdin,
+      output: process.stdout
+    });
+    try {
+      const text2 = `Open a pull request on ${repo} from ${job.branch}? [y/N]: `;
+      return /^y(es)?$/i.test((await rl.question(question2(p, text2))).trim());
+    } finally {
+      rl.close();
+    }
+  };
+}
+function openedLines(p, pull, width) {
+  const text2 = [
+    p.bold(`Pull request #${pull.number} opened`),
+    p.link(pull.html_url)
+  ];
+  if (width < CAT_FROM)
+    return text2.map((line3) => `  ${line3}`);
+  const cat = drawCat(p, HEAD);
+  const from = Math.floor((cat.length - text2.length) / 2);
+  return beside(cat, text2, from, 3);
+}
+var GITHUB, CAT_FROM;
+var init_local = __esm({
+  "packages/cli/dist/src/commands/fix/local.js"() {
+    "use strict";
+    init_cat();
+    init_failure();
+    init_human();
+    init_pr();
+    GITHUB = /^(?:https:\/\/github\.com\/|(?:ssh:\/\/)?git@github\.com[:/])([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/;
+    CAT_FROM = 80;
   }
 });
 
@@ -224442,20 +226006,20 @@ var init_progress = __esm({
       }
       dot(at2, stage) {
         if (at2 < stage)
-          return this.paint.tone("green", "\u25CF");
+          return this.paint.tone("accent", "\u25CF");
         if (at2 > stage)
           return this.paint.dim("\u25CB");
         const turn = Math.floor((this.clock() - this.start) / FRAME2) % TURN.length;
-        return this.paint.tone("accent", TURN[turn]);
+        return this.paint.bold(TURN[turn]);
       }
       bar(pct) {
         const full = Math.floor(pct * WIDTH / 100);
-        const cells2 = Array.from({ length: full }, (_, i) => this.paint.cell(i / (WIDTH - 1), "\u2588"));
-        return cells2.join("") + this.paint.dim("\u2591".repeat(WIDTH - full));
+        const done = this.paint.tone("accent", "\u2588".repeat(full));
+        return done + this.paint.dim("\u2591".repeat(WIDTH - full));
       }
       spinner() {
         const at2 = Math.floor((this.clock() - this.start) / FRAME2) % (WIDTH - 4);
-        const cells2 = Array.from({ length: WIDTH }, (_, i) => i >= at2 && i < at2 + 4 ? this.paint.cell(i / (WIDTH - 1), "\u2593") : this.paint.dim("\u2591"));
+        const cells2 = Array.from({ length: WIDTH }, (_, i) => i >= at2 && i < at2 + 4 ? this.paint.tone("accent", "\u2593") : this.paint.dim("\u2591"));
         return cells2.join("");
       }
     };
@@ -224463,11 +226027,11 @@ var init_progress = __esm({
 });
 
 // packages/cli/dist/src/term/scan.js
-import { readFileSync as readFileSync7, statSync as statSync4 } from "node:fs";
-import { relative as relative3, resolve as resolve2 } from "node:path";
+import { readFileSync as readFileSync11, statSync as statSync5 } from "node:fs";
+import { relative as relative3, resolve as resolve9 } from "node:path";
 async function readWithProgress(root, progress) {
   const { files, unread } = walkFiles(root);
-  const sources = [];
+  const sources2 = [];
   let large = 0;
   const step = (done, force = false) => progress.update({
     label: "scan code",
@@ -224479,12 +226043,12 @@ async function readWithProgress(root, progress) {
   step(0);
   for (const [i, path2] of files.entries()) {
     try {
-      if (statSync4(path2).size > MAX_BYTES)
+      if (statSync5(path2).size > MAX_BYTES)
         large++;
       else
-        sources.push({
+        sources2.push({
           file: relative3(root, path2).split("\\").join("/"),
-          text: readFileSync7(path2, "utf8")
+          text: readFileSync11(path2, "utf8")
         });
     } catch {
       step(i + 1);
@@ -224495,10 +226059,10 @@ async function readWithProgress(root, progress) {
       await tick();
   }
   step(files.length, true);
-  return { sources, unread: { ...unread, large } };
+  return { sources: sources2, unread: { ...unread, large } };
 }
 async function scan(path2, list2, progress) {
-  const root = resolve2(path2);
+  const root = resolve9(path2);
   const loaded = /* @__PURE__ */ new Map();
   const changes = {
     versions: (name) => loaded.get(name) ?? bundledChanges.versions(name)
@@ -224532,10 +226096,10 @@ async function scan(path2, list2, progress) {
   }
   if (found.length === 0)
     return { tree: directoryTree(root), changes };
-  const { sources, unread } = await readWithProgress(root, progress);
+  const { sources: sources2, unread } = await readWithProgress(root, progress);
   progress.update({ label: "match", stage: "matches" }, true);
   return {
-    tree: { root, sources: () => sources, unread: () => unread },
+    tree: { root, sources: () => sources2, unread: () => unread },
     changes
   };
 }
@@ -224550,984 +226114,79 @@ var init_scan = __esm({
   }
 });
 
-// packages/cli/dist/src/commands/inspect/path.js
-import { statSync as statSync5 } from "node:fs";
-function exists(path2) {
-  try {
-    return statSync5(path2);
-  } catch (error) {
-    const code2 = error.code ?? "";
-    if (MISSING.has(code2))
-      return null;
-    throw error;
+// packages/cli/dist/src/commands/fix/run.js
+import { readFileSync as readFileSync12 } from "node:fs";
+function asks(flags, run2) {
+  if (!run2.github || flags.yes)
+    return false;
+  if (process.stdin.isTTY && process.stdout.isTTY)
+    return true;
+  if (flags.github !== void 0)
+    return false;
+  throw new HintedError("upseam fix asks before it opens a pull request, and there is no terminal to ask in", "pass --yes to open it without the question", 2);
+}
+async function scanAndFix(root, flags, run2) {
+  const skip = flags.skip ? JSON.parse(readFileSync12(flags.skip, "utf8")) : void 0;
+  const progress = Progress.for(false);
+  const { tree: tree3, changes } = await scan(root, Object.values(providers), progress);
+  await progress.finish();
+  const term = terminal(process.stdout);
+  const shown2 = flags.stage === void 0 && term.rich;
+  const p = shown2 ? new Paint(term) : void 0;
+  const columns = columnsOf(process.stdout);
+  const confirm2 = asks(flags, run2) ? confirmer(run2.repo, p) : void 0;
+  if (p) {
+    const where = flags["dry-run"] ? DRY_RUN : run2.repo ?? "";
+    console.log(`${p.header("fix", where)}
+`);
   }
+  await fix({
+    log: p ? (line3) => console.log(fixLine(p, line3, columns)) : void 0,
+    tree: tree3,
+    changes,
+    path: root,
+    model: run2.model,
+    ask: run2.ask,
+    keyName: run2.keyName,
+    github: run2.github,
+    repo: run2.repo,
+    stage: flags.stage,
+    skip,
+    confirm: confirm2,
+    opened: p ? (pull) => console.log(openedLines(p, pull, columns).join("\n")) : void 0
+  });
 }
-function checkPath(path2, command = "inspect") {
-  const found = exists(path2);
-  if (!found)
-    throw new HintedError(`path not found: ${path2}`, `pass the repository directory, for example: upseam ${command} ./my-repo`, 1);
-  if (!found.isDirectory())
-    throw new HintedError(`not a directory: ${path2}`, `${command} reads a repository; pass the directory that contains the file`, 1);
-}
-var MISSING;
-var init_path = __esm({
-  "packages/cli/dist/src/commands/inspect/path.js"() {
+var init_run = __esm({
+  "packages/cli/dist/src/commands/fix/run.js"() {
     "use strict";
+    init_src4();
     init_failure();
-    MISSING = /* @__PURE__ */ new Set(["ENOENT", "ENOTDIR"]);
-  }
-});
-
-// packages/cli/dist/src/term/diff.js
-function line(p, text2) {
-  if (/^(diff |index |new file|deleted file)/.test(text2))
-    return p.dim(text2);
-  if (/^(---|\+\+\+) /.test(text2))
-    return p.bold(text2);
-  if (text2.startsWith("@@"))
-    return p.tone("accent", text2);
-  if (text2.startsWith("+"))
-    return p.tone("green", text2);
-  if (text2.startsWith("-"))
-    return p.tone("red", text2);
-  return text2;
-}
-function diff2(p, text2) {
-  return text2.split("\n").map((l) => line(p, l)).join("\n");
-}
-var init_diff2 = __esm({
-  "packages/cli/dist/src/term/diff.js"() {
-    "use strict";
-  }
-});
-
-// packages/cli/dist/src/commands/fix/human.js
-function fixLine(p, line3) {
-  const text2 = plain3(line3);
-  return text2.startsWith("diff ") ? diff2(p, text2) : `  ${p.dim("\u203A")} ${text2}`;
-}
-var DRY_RUN;
-var init_human = __esm({
-  "packages/cli/dist/src/commands/fix/human.js"() {
-    "use strict";
-    init_clean();
-    init_diff2();
-    DRY_RUN = "dry run: the patch is printed, nothing is written";
-  }
-});
-
-// packages/cli/dist/src/commands/fix/brief.js
-import { readFileSync as readFileSync8 } from "node:fs";
-import { join as join8 } from "node:path";
-function changeType(event) {
-  const scores = event.judgments?.type;
-  if (!scores)
-    return event.type;
-  return Object.entries(scores).reduce((a, b) => b[1] > a[1] ? b : a)[0];
-}
-function fixable2(event) {
-  return matchedInCode(event) && !event.retires && (event.breaking || event.jev === "breaking") && MECHANICAL2.includes(changeType(event));
-}
-function candidates2(results) {
-  const found = [];
-  for (const { provider, events, prePin, surface } of results) {
-    const pin = surface.apiVersion?.value;
-    const drift = pin ? (prePin ?? []).map((e) => ({ ...e, prePin: pin })) : [];
-    for (const event of [...events, ...drift].filter(fixable2)) {
-      const same2 = found.find((c) => c.provider === provider && c.version === event.version);
-      if (same2)
-        same2.events.push(event);
-      else
-        found.push({ provider, version: event.version, events: [event] });
-    }
-  }
-  return found;
-}
-function pinnedAt(candidate) {
-  return candidate.events.every((e) => e.prePin) ? candidate.events[0]?.prePin : void 0;
-}
-function needsHuman(candidate) {
-  for (const event of candidate.events) {
-    if (changeType(event) === "type_change")
-      continue;
-    const names2 = replacements(event).length;
-    if (names2 === 0)
-      return `${event.title} names no replacement, so moving off it needs you`;
-    if (names2 > 1)
-      return `${event.title} names several replacements, so choosing one needs you`;
-  }
-  return null;
-}
-function maskedLineOf(masking, match) {
-  const lines2 = masking.files[match.file].split("\n");
-  return lines2[match.line - 1].trim();
-}
-function eventText(event, masking) {
-  const lines2 = [
-    `## ${event.version}: ${event.title}`,
-    `Change type: ${changeType(event)}`,
-    `Changelog: ${event.changelog}`,
-    `Summary: ${event.summary}`,
-    ...event.changes.map((c) => `- ${c.change} ${c.what} (${c.where})`),
-    ...event.removed?.length ? [`Removed: ${event.removed.join(", ")}`] : [],
-    ...event.replacedBy?.length ? [`Replaced by: ${event.replacedBy.join(", ")}`] : [],
-    "Matched lines:",
-    ...byConfidence(event.matches).high.map((m) => `- ${m.file}:${m.line}: ${maskedLineOf(masking, m)}`)
-  ];
-  return lines2.join("\n");
-}
-function buildBrief2(path2, candidate) {
-  const confident = candidate.events.flatMap((e) => byConfidence(e.matches).high);
-  const names2 = [...new Set(confident.map((m) => m.file))];
-  const files = {};
-  let size = 0;
-  for (const file of names2) {
-    files[file] = readFileSync8(join8(path2, file), "utf8");
-    size += files[file].length;
-  }
-  if (size > MAX_FILES) {
-    throw new InspectError(`affected files are ${size} characters, over the ${MAX_FILES} limit for a lite patch`, 1);
-  }
-  const masking = maskFiles(files);
-  const pin = pinnedAt(candidate);
-  const goal = pin ? `The code is pinned to API version ${pin} but still uses what API version ${candidate.version} removed. Update it to the replacement.` : `Upgrade the code to API version ${candidate.version}.`;
-  const user = [
-    `API provider: ${candidate.provider}. ${goal}`,
-    ...maskingNote(masking),
-    ...candidate.events.map((event) => eventText(event, masking)),
-    "# Files",
-    ...Object.entries(masking.files).map(([file, text2]) => `--- ${file}
-${text2}
---- end of ${file}`)
-  ].join("\n\n");
-  return { ...candidate, files, masking, prompt: { system: SYSTEM2, user } };
-}
-function parseReply2(text2, brief) {
-  const json = text2.trim().replace(/^```(?:json)?\s*\n/, "").replace(/\n```$/, "");
-  let reply;
-  try {
-    reply = JSON.parse(json);
-  } catch {
-    throw new InspectError("model reply is not JSON; no patch", 1);
-  }
-  const files = reply?.files;
-  if (!Array.isArray(files)) {
-    throw new InspectError('model reply has no "files" array; no patch', 1);
-  }
-  const changed2 = {};
-  for (const entry of files) {
-    const { path: path2, content: content3 } = entry ?? {};
-    if (typeof path2 !== "string" || typeof content3 !== "string") {
-      throw new InspectError("model reply has a malformed file entry", 1);
-    }
-    if (!Object.hasOwn(brief.files, path2)) {
-      throw new InspectError(`model reply names ${JSON.stringify(path2)}, which is not a file of the brief; no patch`, 1);
-    }
-    if (Object.hasOwn(changed2, path2)) {
-      throw new InspectError(`model reply names ${JSON.stringify(path2)} twice; no patch`, 1);
-    }
-    if (content3 !== brief.masking.files[path2])
-      changed2[path2] = content3;
-  }
-  return changed2;
-}
-var MECHANICAL2, MAX_FILES, SYSTEM2;
-var init_brief2 = __esm({
-  "packages/cli/dist/src/commands/fix/brief.js"() {
-    "use strict";
-    init_src5();
-    MECHANICAL2 = ["removal", "rename", "type_change"];
-    MAX_FILES = 24e3;
-    SYSTEM2 = [
-      "You update application code for a breaking change in an external API.",
-      "Change only what the API change requires; keep formatting, style and unrelated code as they are.",
-      'Reply with JSON only, no prose and no code fences: {"files":[{"path":"<path from the brief>","content":"<complete new file content>"}]}.',
-      "List only files you change, with their complete new content. Use only paths given in the brief.",
-      'If the change cannot be made safely without more context, reply {"files":[]}.'
-    ].join("\n");
-  }
-});
-
-// packages/cli/dist/src/commands/fix/text.js
-import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname as dirname2, join as join9 } from "node:path";
-function diff3(brief, changed2) {
-  const dir = mkdtempSync(join9(tmpdir(), "upseam-diff-"));
-  try {
-    const out = [];
-    for (const [file, content3] of Object.entries(changed2)) {
-      for (const [side2, text2] of [
-        ["a", brief.files[file]],
-        ["b", content3]
-      ]) {
-        mkdirSync(dirname2(join9(dir, side2, file)), { recursive: true });
-        writeFileSync(join9(dir, side2, file), text2);
-      }
-      const args = ["diff", "--no-index", "--no-prefix", "--", "a/" + file];
-      const run2 = spawnSync("git", [...args, "b/" + file], {
-        cwd: dir,
-        encoding: "utf8"
-      });
-      out.push(run2.stdout);
-    }
-    return plain3(out.join(""));
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-function matchNotes(event) {
-  const { high, low } = byConfidence(event.matches);
-  const notes = [];
-  if (high.length >= MAX_MATCHES)
-    notes.push(`  **Partial:** this change matches at least ${MAX_MATCHES} call sites and only the first ${MAX_MATCHES} were sent to the model; more may need the same change.`);
-  if (low.length > 0)
-    notes.push(`  ${lowConfidenceLine(event, low.length)}, not sent to the model.`);
-  return notes;
-}
-function prBody(brief, files, model, maskedSecrets) {
-  const events = brief.events.flatMap((e) => [
-    `- [${label(e.title)}](${e.changelog}) (${changeType(e)})`,
-    `  ${label(e.summary)}`,
-    ...matchNotes(e)
-  ]);
-  const pin = pinnedAt(brief);
-  const title = providers[brief.provider]?.title ?? brief.provider;
-  return [
-    "<!-- upseam:fix -->",
-    pin ? `${title} removed this in API version ${brief.version}, at or before your pin ${pin}, and the code still references it. Upseam updates this code.` : `Upseam updates this code for ${title} API version ${brief.version}.`,
-    "",
-    "## API changes",
-    "",
-    ...events,
-    "",
-    "## Files",
-    "",
-    ...files.map((f) => `- ${code(f)}`),
-    "",
-    "## Verification",
-    "",
-    "Upseam ran no tests; the checks of this pull request run them.",
-    "",
-    `The change was written by ${code(model)}, the model you chose, called with your own API key. Review it before merging.`,
-    ...maskedLine(maskedSecrets)
-  ].join("\n");
-}
-var init_text3 = __esm({
-  "packages/cli/dist/src/commands/fix/text.js"() {
-    "use strict";
-    init_src4();
-    init_src5();
-    init_clean();
-    init_brief2();
-  }
-});
-
-// packages/cli/dist/src/github.js
-import { execFileSync } from "node:child_process";
-function isReport(issue) {
-  const trusted = issue.user?.type === "Bot" || TRUSTED.includes(issue.author_association);
-  return !issue.pull_request && trusted && (issue.body ?? "").startsWith(MARKER);
-}
-function sameReport(a, b) {
-  const findings2 = (body) => body.replace(/\r\n/g, "\n").split(`
-${TRAILER}`)[0].replace(/\/(blob|commit)\/[0-9a-f]{40}\b/g, "/$1/");
-  return findings2(a) === findings2(b);
-}
-function requester(token, send = fetch) {
-  return async (url, method = "GET", payload) => {
-    const response = await send(url, {
-      method,
-      headers: {
-        authorization: `Bearer ${token}`,
-        accept: "application/vnd.github+json",
-        "x-github-api-version": "2022-11-28",
-        "user-agent": "upseam"
-      },
-      body: payload && JSON.stringify(payload),
-      signal: AbortSignal.timeout(TIMEOUT)
-    });
-    if (!response.ok) {
-      const text2 = await response.text();
-      const { status: status2 } = response;
-      const message = `GitHub ${method} ${new URL(url).pathname}: ${status2} ${text2.slice(0, 200)}`;
-      throw Object.assign(new Error(message), { status: status2 });
-    }
-    return response;
-  };
-}
-async function upsertIssue(options2) {
-  const { apiUrl, token, repo, title, body } = options2;
-  const call2 = requester(token, options2.fetch);
-  const issues = `${apiUrl.replace(/\/$/, "")}/repos/${repo}/issues`;
-  let next = `${issues}?state=all&per_page=100`;
-  while (next) {
-    const response = await call2(next);
-    const found = (await response.json()).find(isReport);
-    if (found) {
-      const { number, html_url: url } = found;
-      if (sameReport(found.body ?? "", body)) {
-        return { action: "unchanged", number, url };
-      }
-      await call2(`${issues}/${number}`, "PATCH", { body });
-      return { action: "updated", number, url };
-    }
-    next = /<([^>]+)>;\s*rel="next"/.exec(response.headers.get("link") ?? "")?.[1];
-  }
-  if (options2.create === false)
-    return null;
-  const created = await (await call2(issues, "POST", { title, body })).json();
-  return { action: "created", number: created.number, url: created.html_url };
-}
-function commitOf(path2, repo) {
-  const git3 = (...args) => execFileSync("git", ["-C", path2, "rev-parse", ...args], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"]
-  }).trim();
-  let sha, prefix;
-  try {
-    [sha, prefix] = [git3("HEAD"), git3("--show-prefix")];
-  } catch {
-    return void 0;
-  }
-  const server3 = process.env.GITHUB_SERVER_URL ?? "https://github.com";
-  return { url: `${server3.replace(/\/$/, "")}/${repo}`, sha, prefix };
-}
-var TRUSTED, TIMEOUT;
-var init_github = __esm({
-  "packages/cli/dist/src/github.js"() {
-    "use strict";
-    init_src5();
-    TRUSTED = ["OWNER", "MEMBER", "COLLABORATOR"];
-    TIMEOUT = 12e4;
-  }
-});
-
-// packages/cli/dist/src/commands/fix/pr.js
-import { execFileSync as execFileSync2 } from "node:child_process";
-function branchName(provider, version2) {
-  return `upseam/${provider}-${version2}`;
-}
-function git(cwd, ...args) {
-  return execFileSync2("git", ["-C", cwd, ...args], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"]
-  }).trim();
-}
-function currentBranch(cwd) {
-  const name = git(cwd, "rev-parse", "--abbrev-ref", "HEAD");
-  return name === "HEAD" ? void 0 : name;
-}
-function dirty(cwd, files) {
-  return git(cwd, "status", "--porcelain", "--", ...files).split("\n").filter(Boolean);
-}
-async function call(gh, path2, method = "GET", payload) {
-  const url = `${gh.apiUrl.replace(/\/$/, "")}/repos/${gh.repo}${path2}`;
-  return (await requester(gh.token, gh.fetch)(url, method, payload)).json();
-}
-async function findPull(gh, branch2) {
-  const owner = gh.repo.split("/")[0];
-  const head = encodeURIComponent(`${owner}:${branch2}`);
-  const pulls = await call(gh, `/pulls?head=${head}&state=all`);
-  return pulls[0];
-}
-async function openPull(gh, pull) {
-  return await call(gh, "/pulls", "POST", pull);
-}
-var init_pr = __esm({
-  "packages/cli/dist/src/commands/fix/pr.js"() {
-    "use strict";
-    init_github();
-  }
-});
-
-// packages/cli/dist/src/commands/fix/publish.js
-import { execFileSync as execFileSync3 } from "node:child_process";
-import { mkdtempSync as mkdtempSync2, rmSync as rmSync2 } from "node:fs";
-import { tmpdir as tmpdir2 } from "node:os";
-import { isAbsolute, join as join10, resolve as resolve3 } from "node:path";
-import { pathToFileURL } from "node:url";
-function remoteUrl(root) {
-  const url = git(root, "remote", "get-url", "origin");
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(url) || /^[^/]+@[^/]+:/.test(url))
-    return url;
-  return pathToFileURL(isAbsolute(url) ? url : resolve3(root, url)).href;
-}
-function identity(root) {
-  try {
-    return [
-      git(root, "config", "user.name"),
-      git(root, "config", "user.email")
-    ];
-  } catch {
-    return BOT;
-  }
-}
-function server2() {
-  return new URL(process.env.GITHUB_SERVER_URL ?? "https://github.com").origin;
-}
-function cleanEnv(home, url, token) {
-  const config = [
-    ["core.hooksPath", "/dev/null"],
-    ["core.fsmonitor", ""],
-    ["core.sshCommand", "ssh"],
-    ["http.proxy", ""],
-    ["http.sslVerify", "true"],
-    ["protocol.ext.allow", "never"]
-  ];
-  const https = /^https:\/\//i.test(url) && new URL(url).origin === server2();
-  if (token && https) {
-    const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
-    config.push([
-      `http.${server2()}/.extraheader`,
-      `AUTHORIZATION: basic ${basic}`
-    ]);
-  }
-  return {
-    PATH: process.env.PATH,
-    HOME: home,
-    GIT_CONFIG_NOSYSTEM: "1",
-    GIT_CONFIG_GLOBAL: "/dev/null",
-    GIT_TERMINAL_PROMPT: "0",
-    GIT_CONFIG_COUNT: String(config.length),
-    ...Object.fromEntries(config.flatMap(([key2, value2], i) => [
-      [`GIT_CONFIG_KEY_${i}`, key2],
-      [`GIT_CONFIG_VALUE_${i}`, value2]
-    ]))
-  };
-}
-function cleanPush(push) {
-  const home = mkdtempSync2(join10(tmpdir2(), "upseam-push-"));
-  const repo = join10(home, "repo");
-  const [name, email] = push.identity;
-  const env = {
-    ...cleanEnv(home, push.url, push.token),
-    GIT_AUTHOR_NAME: name,
-    GIT_AUTHOR_EMAIL: email,
-    GIT_COMMITTER_NAME: name,
-    GIT_COMMITTER_EMAIL: email
-  };
-  const run2 = (args, input) => execFileSync3("git", ["-C", repo, ...args], {
-    env,
-    input,
-    encoding: "utf8",
-    stdio: ["pipe", "pipe", "pipe"]
-  }).trim();
-  try {
-    execFileSync3("git", ["init", "-q", repo], { env, stdio: "ignore" });
-    run2(["fetch", "-q", "--no-tags", "--depth=1", push.url, push.base]);
-    run2(["read-tree", push.base]);
-    for (const [path2, content3] of Object.entries(push.files)) {
-      const [mode] = run2(["ls-tree", push.base, "--", path2]).split(" ");
-      if (!mode || !REGULAR.has(mode))
-        throw new InspectError(`${path2} is not a regular file at ${push.base}`, 1);
-      const blob = run2(["hash-object", "-w", "--no-filters", "--stdin"], content3);
-      run2(["update-index", "--cacheinfo", `${mode},${blob},${path2}`]);
-    }
-    const tree3 = run2(["write-tree"]);
-    const commit = run2(["commit-tree", tree3, "-p", push.base, "-F", "-"], push.message);
-    const force = push.lease === void 0 ? "--force" : `--force-with-lease=refs/heads/${push.branch}:${push.lease}`;
-    run2([
-      "push",
-      "-q",
-      "--no-verify",
-      force,
-      push.url,
-      `${commit}:refs/heads/${push.branch}`
-    ]);
-    return commit;
-  } finally {
-    rmSync2(home, { recursive: true, force: true });
-  }
-}
-var BOT, REGULAR;
-var init_publish = __esm({
-  "packages/cli/dist/src/commands/fix/publish.js"() {
-    "use strict";
-    init_src5();
-    init_pr();
-    BOT = [
-      "github-actions[bot]",
-      "41898282+github-actions[bot]@users.noreply.github.com"
-    ];
-    REGULAR = /* @__PURE__ */ new Set(["100644", "100755"]);
-  }
-});
-
-// packages/cli/dist/src/commands/fix/safety.js
-function maskedNote(count) {
-  if (count === 0)
-    return null;
-  const what = count === 1 ? "1 likely secret" : `${count} likely secrets`;
-  return `masked ${what} before the model saw the files`;
-}
-function unmasked(brief, files) {
-  const restored = restoreSecrets(brief, files);
-  if (restored.ok)
-    return restored.files;
-  throw new InspectError(`the secrets gate rejected the patch in ${restored.file}: ${restored.reason}; nothing pushed`, 1);
-}
-function gated(brief, files) {
-  const gate = checkPatch(brief, files);
-  if (gate.ok)
-    return gate.files;
-  const where = gate.file ? ` in ${gate.file}${gate.line ? `:${gate.line}` : ""}` : "";
-  throw new InspectError(`the ${gate.gate} gate rejected the patch${where}: ${gate.reason}; nothing pushed`, 1);
-}
-function gateBrief(brief, repo) {
-  const { provider, version: version2, events, files, masking, prompt } = brief;
-  const key2 = `${provider}/${version2}`;
-  const group3 = { key: key2, kind: "fix", repo, provider, from: null };
-  return {
-    group: { ...group3, to: version2, events, needsHuman: [] },
-    files,
-    masking,
-    prompt
-  };
-}
-var init_safety = __esm({
-  "packages/cli/dist/src/commands/fix/safety.js"() {
-    "use strict";
-    init_src5();
-  }
-});
-
-// packages/cli/dist/src/commands/fix/stage.js
-import { createHash as createHash2 } from "node:crypto";
-import { existsSync as existsSync3, lstatSync, mkdirSync as mkdirSync2, readdirSync as readdirSync6, readFileSync as readFileSync9, writeFileSync as writeFileSync2 } from "node:fs";
-import { join as join11, resolve as resolve4 } from "node:path";
-function bytes2(path2) {
-  const stat = lstatSync(path2, { throwIfNoEntry: false });
-  if (!stat)
-    return "-";
-  if (!stat.isFile())
-    return `${stat.mode}`;
-  return sha256(readFileSync9(path2));
-}
-function tree(dir) {
-  if (!existsSync3(dir))
-    return [];
-  return readdirSync6(dir, { recursive: true, encoding: "utf8" }).sort().map((name) => `${name}:${bytes2(join11(dir, name))}`);
-}
-function guard(root, gitDir, commonDir) {
-  return sha256([
-    ...[".gitattributes"].map((f) => bytes2(join11(root, f))),
-    ...["config", "config.worktree"].map((f) => bytes2(join11(gitDir, f))),
-    ...["config", "info/attributes"].map((f) => bytes2(join11(commonDir, f))),
-    ...tree(join11(commonDir, "hooks"))
-  ].join("\n"));
-}
-function writeStage(root, dir, staged, files) {
-  if (existsSync3(dir) && readdirSync6(dir).length > 0)
-    throw new InspectError(`${dir} is not empty; stage into a new directory`, 2);
-  if (resolve4(dir).startsWith(root + "/"))
-    throw new InspectError(`${dir} is inside the repository; stage outside it`, 2);
-  mkdirSync2(join11(dir, "files"), { recursive: true, mode: 448 });
-  const [gitDir, commonDir] = git(root, "rev-parse", "--absolute-git-dir", "--git-common-dir").split("\n");
-  const common = resolve4(root, commonDir);
-  const list2 = Object.entries(files).map(([path2, content3], i) => {
-    writeFileSync2(join11(dir, "files", String(i)), content3);
-    return { path: path2, sha256: sha256(content3), blob: `files/${i}` };
-  });
-  for (const [path2, content3] of Object.entries(files))
-    writeFileSync2(join11(root, path2), content3);
-  const manifest = {
-    upseam: 1,
-    ...staged,
-    gitDir,
-    commonDir: common,
-    guard: guard(root, gitDir, common),
-    files: list2
-  };
-  const text2 = JSON.stringify(manifest, null, 2);
-  writeFileSync2(join11(dir, "manifest.json"), text2);
-  return sha256(text2);
-}
-function readStage(root, dir, digest) {
-  const text2 = readFileSync9(join11(dir, "manifest.json"));
-  if (sha256(text2) !== digest)
-    throw refuse("the manifest changed after the generate step");
-  const manifest = JSON.parse(text2.toString("utf8"));
-  const files = {};
-  for (const { path: path2, sha256: hash, blob } of manifest.files) {
-    const content3 = readFileSync9(join11(dir, blob));
-    if (sha256(content3) !== hash)
-      throw refuse(`the staged copy of ${path2} changed after the generate step`);
-    const full = resolve4(root, path2);
-    const stat = lstatSync(full, { throwIfNoEntry: false });
-    if (!stat?.isFile() || sha256(readFileSync9(full)) !== hash)
-      throw refuse(`${path2} changed after the gates passed`);
-    files[path2] = content3.toString("utf8");
-  }
-  if (guard(root, manifest.gitDir, manifest.commonDir) !== manifest.guard)
-    throw refuse("the git config, hooks or attributes changed after the generate step");
-  return { manifest, files };
-}
-async function publishStage(root, dir, digest, github, body, log) {
-  const { manifest, files } = readStage(root, dir, digest);
-  const existing2 = await findPull(github, manifest.branch);
-  if (existing2) {
-    log(`pull request #${existing2.number} exists for ${manifest.branch}; skipping`);
-    return "none";
-  }
-  const touched = Object.keys(files);
-  try {
-    cleanPush({
-      url: manifest.url,
-      base: manifest.base,
-      branch: manifest.branch,
-      files,
-      message: manifest.title,
-      identity: manifest.identity,
-      token: github.token
-    });
-  } catch (error) {
-    if (error instanceof InspectError)
-      throw error;
-    throw refuse(`push to ${manifest.branch} failed`);
-  }
-  const pull = await openPull(github, {
-    title: manifest.title,
-    head: manifest.branch,
-    base: manifest.baseBranch,
-    body: body(manifest, touched)
-  });
-  log(`opened pull request #${pull.number}: ${pull.html_url}`);
-  return "opened";
-}
-var sha256, refuse;
-var init_stage = __esm({
-  "packages/cli/dist/src/commands/fix/stage.js"() {
-    "use strict";
-    init_src5();
-    init_pr();
-    init_publish();
-    sha256 = (data) => createHash2("sha256").update(data).digest("hex");
-    refuse = (why) => new InspectError(`${why}; nothing pushed`, 1);
-  }
-});
-
-// packages/cli/dist/src/commands/fix/fix.js
-import { resolve as resolve5 } from "node:path";
-async function openPulls(path2, github) {
-  const results = inspectRepo(directoryTree(resolve5(path2)), Object.values(providers));
-  const branches = [];
-  for (const c of candidates2(results)) {
-    const branch2 = branchName(c.provider, c.version);
-    if (await findPull(github, branch2))
-      branches.push(branch2);
-  }
-  return branches;
-}
-async function fix(options2) {
-  const log = options2.log ?? say;
-  const path2 = resolve5(options2.path);
-  const results = inspectRepo(options2.tree ?? directoryTree(path2), Object.values(providers), options2.changes ? { changes: options2.changes } : {});
-  const { github, stage } = options2;
-  const writes = Boolean(github || stage);
-  const base = writes ? currentBranch(path2) : "";
-  if (base === void 0) {
-    log("HEAD is detached (for example a pull_request run); upseam fix runs on a branch checkout (schedule, push, workflow_dispatch); skipped");
-    return "none";
-  }
-  let brief;
-  const found = candidates2(results);
-  for (const candidate of found) {
-    const branch3 = branchName(candidate.provider, candidate.version);
-    const existing2 = github && await findPull(github, branch3);
-    if (existing2 || options2.skip?.includes(branch3)) {
-      const which = existing2 ? `pull request #${existing2.number}` : "a pull request";
-      log(`${which} exists for ${branch3}; skipping`);
-      continue;
-    }
-    const human = needsHuman(candidate);
-    if (human) {
-      log(`${branch3}: needs a human: ${human}; skipping`);
-      continue;
-    }
-    try {
-      brief = buildBrief2(path2, candidate);
-      break;
-    } catch (error) {
-      if (!(error instanceof InspectError))
-        throw error;
-      log(`${branch3}: ${error.message}; skipping`);
-    }
-  }
-  if (!brief) {
-    log(found.length > 0 ? "no fixable version left (existing pull requests, changes that need a human or oversized files); nothing to fix" : "no breaking mechanical change matched in code; nothing to fix");
-    return "none";
-  }
-  const pin = pinnedAt(brief);
-  if (pin)
-    log(`pre-pin: ${prePinFlag(brief.events[0], pin)} (${brief.provider} ${brief.version})`);
-  const files = Object.keys(brief.files);
-  if (writes && dirty(path2, files).length > 0) {
-    throw new HintedError(`uncommitted changes in ${files.join(", ")}`, "commit or stash them first", 1);
-  }
-  const maskedSecrets = brief.masking.secrets.size;
-  const masked = maskedNote(maskedSecrets);
-  if (masked)
-    log(masked);
-  const reply = parseReply2(await options2.ask(brief.prompt), brief);
-  if (Object.keys(reply).length === 0) {
-    log("the model proposed no change; no patch");
-    return "none";
-  }
-  const changed2 = unmasked(brief, reply);
-  const repo = github?.repo ?? options2.repo ?? "local/repository";
-  const touched = gated(gateBrief(brief, repo), changed2);
-  const gatedFiles = Object.fromEntries(touched.map((f) => [f, changed2[f]]));
-  if (!github && !stage) {
-    log(diff3(brief, changed2));
-    return "dry-run";
-  }
-  const branch2 = branchName(brief.provider, brief.version);
-  const title = pinnedAt(brief) ? `Replace ${brief.provider} API removed in version ${brief.version}` : `Update ${brief.provider} code for API version ${brief.version}`;
-  const commit = {
-    url: remoteUrl(path2),
-    base: git(path2, "rev-parse", "HEAD"),
-    identity: identity(path2)
-  };
-  if (stage) {
-    const { provider, version: version2, events } = brief;
-    const digest = writeStage(path2, resolve5(stage), {
-      provider,
-      version: version2,
-      events,
-      branch: branch2,
-      baseBranch: base,
-      title,
-      model: options2.model,
-      maskedSecrets,
-      ...commit
-    }, gatedFiles);
-    log(`staged ${touched.join(", ")} for ${branch2}; manifest sha256 ${digest}`);
-    return "staged";
-  }
-  cleanPush({
-    ...commit,
-    branch: branch2,
-    files: gatedFiles,
-    message: title,
-    token: github.token
-  });
-  const body = prBody(brief, touched, options2.model, maskedSecrets);
-  const pull = await openPull(github, { title, head: branch2, base, body });
-  log(`opened pull request #${pull.number}: ${pull.html_url}`);
-  return "opened";
-}
-function publishFix(options2) {
-  return publishStage(resolve5(options2.path), resolve5(options2.dir), options2.digest, options2.github, (m, files) => prBody(m, files, m.model, m.maskedSecrets), options2.log ?? say);
-}
-var say;
-var init_fix = __esm({
-  "packages/cli/dist/src/commands/fix/fix.js"() {
-    "use strict";
-    init_src4();
-    init_brief2();
-    init_src5();
-    init_text3();
-    init_pr();
-    init_publish();
-    init_safety();
-    init_stage();
-    init_clean();
-    init_failure();
-    say = (line3) => console.log(plain3(line3));
-  }
-});
-
-// packages/cli/dist/src/commands/fix/edits.js
-import { execFileSync as execFileSync4 } from "node:child_process";
-import { lstatSync as lstatSync2, readFileSync as readFileSync10 } from "node:fs";
-import { resolve as resolve6, sep } from "node:path";
-function changed(root) {
-  const status2 = execFileSync4("git", [
-    "-C",
-    root,
-    ...SAFE,
-    "status",
-    "--porcelain=v1",
-    "-z",
-    "--untracked-files=all"
-  ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-  const entries = status2.split("\0").filter((e) => e.length > 0);
-  if (entries.some((e) => !e.startsWith(" M ")))
-    throw refuse2("your agent created, deleted, renamed or staged a file; Upseam only accepts edits of existing files");
-  return entries.map((e) => e.slice(3));
-}
-function takeEdits(root, sha) {
-  const files = changed(root);
-  if (files.length === 0)
-    return null;
-  if (git(root, ...SAFE, "diff", "--summary", sha, "--", ...files) !== "")
-    throw refuse2("your agent changed the mode of a file");
-  const out = [];
-  for (const path2 of files) {
-    const [mode] = git(root, ...SAFE, "ls-tree", sha, "--", path2).split(" ");
-    if (!mode || !REGULAR2.has(mode))
-      throw refuse2(`${path2} is not a regular file at ${sha}`);
-    const full = resolve6(root, path2);
-    const stat = lstatSync2(full, { throwIfNoEntry: false });
-    if (!full.startsWith(root + sep) || !stat?.isFile() || stat.size > MAX_FILE)
-      throw refuse2(`${path2} is not a regular file under 1 MB`);
-    out.push({ path: path2, content: readFileSync10(full, "utf8") });
-  }
-  git(root, ...SAFE, "checkout", "-q", sha, "--", ...files);
-  return JSON.stringify({ files: out });
-}
-var SAFE, REGULAR2, MAX_FILE, refuse2;
-var init_edits = __esm({
-  "packages/cli/dist/src/commands/fix/edits.js"() {
-    "use strict";
-    init_src5();
-    init_pr();
-    SAFE = [
-      "--literal-pathspecs",
-      "-c",
-      "core.fsmonitor=",
-      "-c",
-      "core.hooksPath=/dev/null"
-    ];
-    REGULAR2 = /* @__PURE__ */ new Set(["100644", "100755"]);
-    MAX_FILE = 1024 * 1024;
-    refuse2 = (why) => new InspectError(`${why}; nothing pushed`, 1);
-  }
-});
-
-// packages/cli/dist/src/commands/fix/group.js
-import { lstatSync as lstatSync3, readFileSync as readFileSync11, writeFileSync as writeFileSync3 } from "node:fs";
-import { resolve as resolve7, sep as sep2 } from "node:path";
-function validGroup(key2) {
-  return KEY.test(key2) && key2.length <= 190 && !/\.\.|\/\.|\.lock(?:\/|$)|\.$/.test(`upseam/${key2}`);
-}
-function readBrief(root, files) {
-  const out = {};
-  for (const file of files) {
-    const path2 = resolve7(root, file);
-    if (!path2.startsWith(root + sep2))
-      throw new BriefError(`${file} is outside the repository`);
-    const stat = lstatSync3(path2, { throwIfNoEntry: false });
-    if (!stat?.isFile() || stat.size > MAX_FILE2)
-      throw new BriefError(`${file} is not a regular file under 1 MB`);
-    out[file] = readFileSync11(path2, "utf8");
-  }
-  return out;
-}
-function publish(root, branch2, files, opts, message) {
-  try {
-    cleanPush({
-      url: remoteUrl(root),
-      base: opts.sha,
-      branch: branch2,
-      files,
-      message,
-      identity: identity(root),
-      token: opts.token,
-      lease: opts.head ?? ""
-    });
-  } catch {
-    throw new InspectError(`push to ${branch2} was refused: the branch is not where the Upseam App expects it, or the token cannot push (contents: write); nothing pushed`, 1);
-  }
-}
-async function generateGroup(opts) {
-  const log = opts.log ?? say2;
-  if (!validGroup(opts.group) || !SHA.test(opts.sha))
-    throw new InspectError("malformed group key or SHA", 2);
-  if (opts.head !== void 0 && !SHA.test(opts.head))
-    throw new InspectError("malformed head SHA", 2);
-  if (opts.edits !== void 0 && !INPUT.test(opts.edits))
-    throw new InspectError("malformed dispatch input for --edits", 2);
-  const root = resolve7(opts.path);
-  const at2 = git(root, "rev-parse", "HEAD");
-  if (at2 !== opts.sha)
-    throw new InspectError(`HEAD is ${at2}, but the Upseam App asked for ${opts.sha}; check out github.event.client_payload.sha`, 1);
-  let ask2 = opts.ask;
-  if (opts.edits !== void 0) {
-    const edits = takeEdits(root, opts.sha);
-    if (edits === null) {
-      log(`your agent changed nothing at ${opts.sha}; nothing pushed`);
-      return "none";
-    }
-    ask2 = async () => edits;
-  }
-  const results = inspectRepo(directoryTree(root), Object.values(providers));
-  const group3 = groupChanges(results, opts.repo).find((g) => g.key === opts.group);
-  if (!group3 || !fixable(group3)) {
-    log(`group ${opts.group} has no mechanical change to patch at ${opts.sha}; nothing pushed`);
-    return "none";
-  }
-  let brief;
-  try {
-    brief = buildBrief(group3, readBrief(root, briefFiles(group3)), {});
-  } catch (error) {
-    if (!(error instanceof BriefError))
-      throw error;
-    log(`the brief was not built: ${error.message}; nothing pushed`);
-    return "none";
-  }
-  const masked = maskedNote(brief.masking.secrets.size);
-  if (opts.edits === void 0 && masked)
-    log(masked);
-  const reply = parseReply(await ask2(brief.prompt));
-  if (!reply.ok)
-    throw new InspectError(`${reply.reason}; nothing pushed`, 1);
-  const restored = unmasked(brief, reply.files);
-  const files = gated(brief, restored);
-  const changed2 = Object.fromEntries(files.map((f) => [f, restored[f]]));
-  if (opts.edits !== void 0 && !opts.push)
-    for (const file of files)
-      writeFileSync3(resolve7(root, file), changed2[file]);
-  if (!opts.push) {
-    log(diff3(brief, changed2));
-    return "dry-run";
-  }
-  const branch2 = `upseam/${group3.key}`;
-  const trailer = opts.edits ? `
-
-Upseam-Dispatch: ${opts.edits}` : "";
-  const message = `Update ${group3.provider} code for ${group3.to}
-
-Upseam group ${group3.key}.${trailer}`;
-  publish(root, branch2, changed2, opts, message);
-  log(`pushed ${branch2}; the Upseam App re-checks it and opens the pull request`);
-  return "pushed";
-}
-var say2, KEY, SHA, INPUT, MAX_FILE2;
-var init_group2 = __esm({
-  "packages/cli/dist/src/commands/fix/group.js"() {
-    "use strict";
-    init_src4();
-    init_src5();
-    init_edits();
+    init_progress();
+    init_scan();
+    init_style();
+    init_width();
     init_fix();
-    init_pr();
-    init_publish();
-    init_safety();
-    init_clean();
-    say2 = (line3) => console.log(plain3(line3));
-    KEY = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/;
-    SHA = /^[0-9a-f]{40}$/;
-    INPUT = /^[0-9a-f]{64}$/;
-    MAX_FILE2 = 1024 * 1024;
+    init_human();
+    init_local();
   }
 });
 
 // packages/cli/dist/src/commands/fix/cli.js
-import { readFileSync as readFileSync12, writeFileSync as writeFileSync4 } from "node:fs";
+import { writeFileSync as writeFileSync4 } from "node:fs";
 async function runFix(usage2, [command, path2, ...rest2], flags) {
   const code2 = await fixCommand(command, path2, rest2, flags);
   if (code2 === 2)
     console.error(usage2);
   return code2;
 }
+function has(flags, ...keys) {
+  return keys.filter((k) => flags[k] !== void 0);
+}
 function malformed(flags, rest2) {
-  const has = (...keys) => keys.filter((k) => flags[k] !== void 0);
-  const modes = has("group", "pulls", "stage", "publish");
+  const modes = has(flags, "group", "pulls", "stage", "publish");
+  const actionModes = has(flags, "pulls", "stage", "publish");
   const repo = flags.github;
-  return rest2.length > 0 || flags.json || flags["api-version"] !== void 0 || Boolean(flags.task) || modes.length > 1 || flags["dry-run"] && (flags.verify !== void 0 || modes.length > 0) || (flags.group === void 0 ? has("sha", "head", "edits").length > 0 : flags.sha === void 0 || flags.verify !== void 0) || flags.skip !== void 0 && flags.stage === void 0 || (flags.publish === void 0 ? flags.manifest !== void 0 : !DIGEST.test(flags.manifest ?? "")) || (repo === void 0 ? !flags["dry-run"] : !REPO.test(repo));
+  return rest2.length > 0 || flags.json || flags["api-version"] !== void 0 || Boolean(flags.task) || modes.length > 1 || flags["dry-run"] && (flags.verify !== void 0 || actionModes.length > 0) || flags.yes !== void 0 && (flags["dry-run"] || modes.length > 0) || (flags.group === void 0 ? has(flags, "sha", "head", "edits").length > 0 : flags.sha === void 0 || flags.verify !== void 0) || flags.skip !== void 0 && flags.stage === void 0 || (flags.publish === void 0 ? flags.manifest !== void 0 : !DIGEST.test(flags.manifest ?? "")) || (repo === void 0 ? actionModes.length > 0 || flags.group !== void 0 && !flags["dry-run"] : !REPO.test(repo));
 }
 async function fixCommand(command, path2, rest2, flags) {
   const fixOnly = Object.keys(FIX_OPTIONS).some((k) => flags[k] !== void 0);
@@ -225539,11 +226198,15 @@ async function fixCommand(command, path2, rest2, flags) {
     return 2;
   const env = process.env;
   const root = path2 ?? process.cwd();
-  const repo = flags.github;
+  const scans = !has(flags, "group", "pulls", "publish").length;
+  const pushes = scans && !flags["dry-run"] && flags.stage === void 0;
+  if (scans)
+    checkPath(root, "fix");
+  const repo = flags.github ?? (pushes ? originRepo(root) : void 0);
   const token = env.GITHUB_TOKEN;
   const needsToken = repo && !flags["dry-run"] && flags.stage === void 0;
   if (needsToken && flags.group === void 0 && !token)
-    throw new HintedError("GITHUB_TOKEN is not set", "upseam fix --github needs contents: write and pull-requests: write", 1, ": ");
+    throw new HintedError("GITHUB_TOKEN is not set", "upseam fix opens the pull request with it (contents: write, pull-requests: write)", 1, ": ");
   const github = repo && token ? { apiUrl: env.GITHUB_API_URL ?? "https://api.github.com", token, repo } : void 0;
   if (flags.pulls !== void 0) {
     writeFileSync4(flags.pulls, JSON.stringify(await openPulls(root, github)));
@@ -225568,12 +226231,8 @@ async function fixCommand(command, path2, rest2, flags) {
   if (!model)
     throw new HintedError(`no model for vendor ${id}`, "pass --model or set UPSEAM_MODEL", 2, ": ");
   const baseUrl = flags["base-url"] || env.UPSEAM_BASE_URL;
-  const ask2 = (prompt) => {
-    const key2 = env[vendor2.env] || env.UPSEAM_MODEL_KEY;
-    if (!key2)
-      throw new InspectError(`${vendor2.env} is not set`, 1);
-    return complete({ vendor: vendor2, model, key: key2, baseUrl }, prompt);
-  };
+  const key2 = env[vendor2.env] || env.UPSEAM_MODEL_KEY;
+  const ask2 = key2 ? (prompt) => complete({ vendor: vendor2, model, key: key2, baseUrl }, prompt) : void 0;
   if (flags.group !== void 0) {
     await generateGroup({
       path: root,
@@ -225584,31 +226243,18 @@ async function fixCommand(command, path2, rest2, flags) {
       push: !flags["dry-run"],
       edits: flags.edits,
       token,
-      ask: ask2
+      ask: ask2 ?? (() => {
+        throw new InspectError(`${vendor2.env} is not set`, 1);
+      })
     });
     return 0;
   }
-  checkPath(root, "fix");
-  const skip = flags.skip ? JSON.parse(readFileSync12(flags.skip, "utf8")) : void 0;
-  const progress = Progress.for(false);
-  const { tree: tree3, changes } = await scan(root, Object.values(providers), progress);
-  await progress.finish();
-  const term = terminal(process.stdout);
-  const p = flags["dry-run"] && term.rich ? new Paint(term) : void 0;
-  if (p)
-    console.log(`${p.header("fix", DRY_RUN)}
-`);
-  await fix({
-    log: p ? (line3) => console.log(fixLine(p, line3)) : void 0,
-    tree: tree3,
-    changes,
-    path: root,
+  await scanAndFix(root, flags, {
     model: `${id}/${model}`,
     ask: ask2,
-    github: flags.stage === void 0 && !flags["dry-run"] ? github : void 0,
-    repo,
-    stage: flags.stage,
-    skip
+    keyName: vendor2.env,
+    github: pushes ? github : void 0,
+    repo
   });
   return 0;
 }
@@ -225618,15 +226264,12 @@ var init_cli = __esm({
     "use strict";
     init_src();
     init_src5();
-    init_src4();
     init_failure();
-    init_progress();
-    init_scan();
     init_path();
-    init_style();
-    init_human();
     init_fix();
     init_group2();
+    init_local();
+    init_run();
     FIX_OPTIONS = {
       vendor: { type: "string" },
       model: { type: "string" },
@@ -225640,7 +226283,8 @@ var init_cli = __esm({
       stage: { type: "string" },
       skip: { type: "string" },
       publish: { type: "string" },
-      manifest: { type: "string" }
+      manifest: { type: "string" },
+      yes: { type: "boolean" }
     };
     REPO = /^[\w.-]+\/[\w.-]+$/;
     DIGEST = /^[0-9a-f]{64}$/;
@@ -225654,7 +226298,7 @@ var init_package = __esm({
   "packages/cli/dist/package.json"() {
     package_default = {
       name: "@upseam/cli",
-      version: "0.2.1",
+      version: "0.3.0",
       description: "Finds external API changes that affect a repository: SDK, pinned API version, changes since, matched code",
       license: "MIT",
       type: "module",
@@ -225715,7 +226359,7 @@ function prose(p, text2) {
   return text2.replace(LINK2, (_, label4, url) => p.link(url, label4)).replace(STRONG, (_, strong) => p.bold(strong));
 }
 function inline(p, text2) {
-  return text2.split(/(`[^`]+`)/).map((part) => part.startsWith("`") ? p.tone("file", part.slice(1, -1)) : prose(p, part)).join("");
+  return text2.split(/(`[^`]+`)/).map((part) => part.startsWith("`") ? p.bold(part.slice(1, -1)) : prose(p, part)).join("");
 }
 function block2(p, text2, width) {
   if (text2 === "")
@@ -225801,7 +226445,7 @@ var init_human2 = __esm({
 
 // packages/cli/dist/src/commands/report/report.js
 import { appendFileSync } from "node:fs";
-import { resolve as resolve8 } from "node:path";
+import { resolve as resolve10 } from "node:path";
 function writeSummary(target2, results, covered, commit) {
   const banner2 = target2 === process.env.GITHUB_STEP_SUMMARY ? { version: VERSION3 } : void 0;
   const summary4 = renderSummary(results, covered, commit, { banner: banner2 });
@@ -225853,7 +226497,7 @@ async function runReport(path2, options2) {
   console.log(plain3(create ? done : `${noSdk(path2)}; ${done}`));
 }
 function noSdk(path2) {
-  return `no supported API SDK detected in ${resolve8(path2)}`;
+  return `no supported API SDK detected in ${resolve10(path2)}`;
 }
 function previewIssue(path2, results, covered, commit) {
   const term = terminal(process.stdout);
@@ -225909,7 +226553,7 @@ var init_coverage3 = __esm({
 });
 
 // packages/cli/dist/src/commands/inspect/inspect.js
-import { resolve as resolve9 } from "node:path";
+import { resolve as resolve11 } from "node:path";
 function resolveProvider(name) {
   const provider = providers[name];
   if (provider)
@@ -225922,16 +226566,16 @@ function inspectCovered(provider, tree3, options2) {
   const tracked = result.surface.sdk ? 1 : 0;
   return { ...result, coverage: coverage(tree3, tracked, 0) };
 }
-function inspect2(providerName, path2, apiVersion) {
+function inspect3(providerName, path2, apiVersion) {
   const provider = resolveProvider(providerName);
-  return inspectCovered(provider, directoryTree(resolve9(path2)), {
+  return inspectCovered(provider, directoryTree(resolve11(path2)), {
     apiVersion
   });
 }
 async function inspectWithProgress(providerName, path2, apiVersion, progress) {
   const provider = resolveProvider(providerName);
   if (!progress.active)
-    return inspect2(providerName, path2, apiVersion);
+    return inspect3(providerName, path2, apiVersion);
   const { tree: tree3, changes } = await scan(path2, [provider], progress);
   return inspectCovered(provider, tree3, { apiVersion, changes });
 }
@@ -225966,53 +226610,137 @@ var init_inspect3 = __esm({
   }
 });
 
+// packages/cli/dist/src/term/wordmark.js
+function blocks(pixels) {
+  const lines2 = [];
+  for (let y = 0; y < pixels.length; y += 2) {
+    const [top, bottom] = [pixels[y], pixels[y + 1]];
+    lines2.push([...top].map((t, x) => HALVES[t + bottom[x]]).join(""));
+  }
+  return lines2;
+}
+var HALVES, WORDMARK, SMALL_WORDMARK;
+var init_wordmark = __esm({
+  "packages/cli/dist/src/term/wordmark.js"() {
+    "use strict";
+    HALVES = {
+      "##": "\u2588",
+      "#.": "\u2580",
+      ".#": "\u2584",
+      "..": " "
+    };
+    WORDMARK = [
+      "##..##.#####...####...####...####..#########.",
+      "##..##.###.##.##..##.##..##.....##.##..##..##",
+      "##..##.##..##.##.....##..##.....##.##..##..##",
+      "##..##.##..##..####..######..#####.##..##..##",
+      "##..##.##..##.....##.##.....##..##.##..##..##",
+      "##..##.###.##.##..##.##..##.##..##.##..##..##",
+      ".#####.#####...####...####...#####.##..##..##",
+      ".......##....................................",
+      ".......##....................................",
+      "............................................."
+    ];
+    SMALL_WORDMARK = [
+      "#..#.###...###..##...##..####.",
+      "#..#.#..#.#....#..#....#.#.#.#",
+      "#..#.#..#..##..####..###.#.#.#",
+      "#..#.#..#....#.#....#..#.#.#.#",
+      "#..#.#..#....#.#..#.#..#.#.#.#",
+      ".###.###..###...##...###.#.#.#",
+      ".....#........................",
+      ".....#........................"
+    ];
+  }
+});
+
 // packages/cli/dist/src/term/banner.js
-function logoLine(p, line3, edge) {
+function wordmarkLine(p, line3, edge) {
   return [...line3].map((char2, i) => {
-    const hidden = i > edge;
-    const front = i > edge - 1;
-    if (hidden)
+    if (i > edge)
       return " ";
-    if (front && char2 !== " ")
-      return p.tone("peach", SPARK);
-    return p.cell(i / (LOGO_WIDTH - 1), char2);
+    if (i > edge - 1 && char2 !== " ")
+      return p.tone("red", SPARK);
+    return char2;
   }).join("");
 }
-function banner(p, version2, width, t = 1) {
-  const indent2 = 2;
-  const room = width - 1;
-  if (room < indent2 + LOGO_WIDTH + 2)
-    return [`${p.mark()}  ${p.dim(`v${version2}`)}`];
-  const edge = t >= 1 ? Infinity : ease(t) * (LOGO_WIDTH + 2);
+function reveal(t, width) {
+  const edge = t >= 1 ? Infinity : ease(t) * (width + 2);
   const typed = Math.max(0, Math.min(1, (t - TYPE_FROM) / (1 - TYPE_FROM)));
-  const tagline = TAGLINE.slice(0, Math.round(ease(typed) * TAGLINE.length));
-  const name = typed > 0 ? `${p.bold("upseam")} ${p.dim(`v${version2}`)}` : "";
-  const logo = LOGO.map((line3) => `  ${logoLine(p, line3, edge)}`);
-  const beside = indent2 + LOGO_WIDTH + GAP2.length + TAGLINE.length <= room;
-  if (beside)
-    return [`${logo[0]}${GAP2}${name}`, `${logo[1]}${GAP2}${p.dim(tagline)}`];
-  return [...logo, `  ${name}`, fit(`  ${p.dim(tagline)}`, room)];
+  return { edge, typed: ease(typed) };
+}
+function typedLines(lines2, count) {
+  let left = count;
+  return lines2.map((line3) => {
+    const shown2 = line3.slice(0, Math.max(0, left));
+    left -= line3.length + 1;
+    return shown2;
+  });
+}
+function words2(p, layout, version2, t, room) {
+  const mark2 = blocks(layout.mark);
+  const { edge, typed } = reveal(t, mark2[0].length);
+  const count = Math.round(typed * TAGLINE.length);
+  const tagline = typedLines(wrap2(TAGLINE, room), count);
+  return [
+    ...mark2.map((line3) => wordmarkLine(p, line3, edge)),
+    "",
+    ...tagline.map((line3) => p.dim(line3)),
+    typed > 0 ? p.dim(`v${version2}`) : ""
+  ];
+}
+function layoutFor(room) {
+  const wide = WORDMARK[0].length;
+  const fits2 = (art, text2) => INDENT + widthOfCat(art) + ART_GAP + text2 <= room;
+  if (fits2(CAT, Math.max(wide, TAGLINE.length)))
+    return { art: CAT, mark: WORDMARK };
+  if (fits2(HEAD, wide))
+    return { art: HEAD, mark: WORDMARK };
+  if (INDENT + SMALL_WORDMARK[0].length <= room)
+    return { art: null, mark: SMALL_WORDMARK };
+  return null;
+}
+function banner(p, version2, width, t = 1, blink = false) {
+  const room = width - 1;
+  const layout = layoutFor(room);
+  if (!layout)
+    return [`${p.mark()}  ${p.dim(`v${version2}`)}`];
+  if (!layout.art) {
+    const text3 = words2(p, layout, version2, t, room - INDENT);
+    return text3.map((line3) => fit(line3 && `  ${line3}`.trimEnd(), room));
+  }
+  const text2 = room - INDENT - widthOfCat(layout.art) - ART_GAP;
+  const right = words2(p, layout, version2, t, text2);
+  const cat = drawCat(p, layout.art, blink);
+  const from = Math.max(0, Math.floor((cat.length - right.length) / 2));
+  return beside(cat, right, from, ART_GAP);
+}
+function blinking(ms) {
+  return ms >= BLINK.from && ms < BLINK.to;
 }
 function splash(p, out, version2, clock) {
   const width = columnsOf(out);
-  return play(out, (t) => banner(p, version2, width, t), {
-    duration: SPLASH,
-    clock
-  });
+  const draw = (t) => {
+    const ms = t * BLINK.end;
+    return banner(p, version2, width, Math.min(1, ms / SPLASH), blinking(ms));
+  };
+  return play(out, draw, { duration: BLINK.end, clock });
 }
-var LOGO, TAGLINE, SPLASH, LOGO_WIDTH, SPARK, GAP2, TYPE_FROM;
+var TAGLINE, SPLASH, BLINK, SPARK, TYPE_FROM, ART_GAP, INDENT;
 var init_banner2 = __esm({
   "packages/cli/dist/src/term/banner.js"() {
     "use strict";
+    init_cat();
     init_motion();
     init_width();
-    LOGO = ["\u2588 \u2588 \u2588\u2580\u2588 \u2588\u2580\u2580 \u2588\u2580\u2580 \u2584\u2580\u2588 \u2588\u2580\u2584\u2580\u2588", "\u2588\u2584\u2588 \u2588\u2580\u2580 \u2584\u2584\u2588 \u2588\u2588\u2584 \u2588\u2580\u2588 \u2588 \u2580 \u2588"];
+    init_wordmark();
     TAGLINE = "external API changes that affect this repository";
     SPLASH = 600;
-    LOGO_WIDTH = [...LOGO[0]].length;
+    BLINK = { from: 700, to: 860, end: 960 };
     SPARK = "\u2591";
-    GAP2 = "   ";
     TYPE_FROM = 0.4;
+    ART_GAP = 3;
+    INDENT = 2;
   }
 });
 
@@ -226045,7 +226773,7 @@ function help(p, top = [`${p.mark()}  ${p.dim(TAGLINE)}`], columns = Infinity) {
   }
   lines2.push("", title("Options"));
   for (const [o, why2] of OPTIONS)
-    lines2.push(row(o, why2, p.tone("file", o)));
+    lines2.push(row(o, why2, o));
   lines2.push("", title("Examples"));
   for (const e of EXAMPLES)
     lines2.push(...hang(`    ${p.dim("$")} `, "      ", e, columns));
@@ -226096,7 +226824,8 @@ var init_usage = __esm({
       '       upseam agent prune --task "<task>" <fragments.json> [--json]',
       "       upseam report [path] (--github <owner/repo> | --dry-run) [--summary <file>]",
       "       upseam report [path] --summary <file> [--repo <owner/repo>]",
-      "       upseam fix [path] (--github <owner/repo> | --dry-run) [--vendor <id>] [--model <id>] [--base-url <url>]",
+      "       upseam fix [path] [--github <owner/repo>] [--yes] [--vendor <id>] [--model <id>] [--base-url <url>]",
+      "       upseam fix [path] --dry-run [--vendor <id>] [--model <id>] [--base-url <url>]",
       "       upseam fix [path] --github <owner/repo> (--pulls <file> | --stage <dir> [--skip <file>] | --publish <dir> --manifest <sha256>)",
       "       upseam fix [path] --group <key> --sha <sha> [--head <sha>] [--edits <input>] (--github <owner/repo> | --dry-run) [--vendor <id>] [--model <id>] [--base-url <url>]"
     ].join("\n");
@@ -226125,23 +226854,14 @@ var init_usage = __esm({
             "report [path] --github <owner/repo>",
             "create or update that issue (GITHUB_TOKEN)"
           ],
-          ["fix [path] --dry-run", "patch one mechanical change with your model"]
+          ["fix [path]", "patch one change, open a pull request (GITHUB_TOKEN)"],
+          ["fix [path] --dry-run", "print that patch and write nothing"]
         ]
       ],
-      ["Set up", [["init [path]", "set up Upseam in a repository, file by file"]]],
-      [
-        "Agents (TYPESAFE_API_KEY)",
-        [
-          ['agent route "<task>"', "rate a coding task and pick a model tier"],
-          [
-            'agent prune --task "<task>" <fragments.json>',
-            "drop context fragments irrelevant to the task"
-          ]
-        ]
-      ]
+      ["Set up", [["init [path]", "set up Upseam in a repository, file by file"]]]
     ];
     OPTIONS = [
-      ["--json", "machine-readable output (inspect, init, agent)"],
+      ["--json", "machine-readable output (inspect, init)"],
       ["--all", "inspect: every change and low-confidence match"],
       ["--api-version <v>", "inspect: override the detected API version"],
       ["-h, --help", "show this help"],
@@ -226163,14 +226883,14 @@ function panel(p, lines2, width, title = "") {
   const rule = (count) => "\u2500".repeat(Math.max(0, count));
   const name = title ? ` ${title} ` : "";
   const natural = Math.max(widthOf(name) + 2, ...lines2.map(widthOf));
-  const inner = Math.max(1, Math.min(natural, width - 6));
+  const inner = Math.max(1, Math.min(natural, width - 7));
   const top = title ? `${edge("\u256D\u2500")}${p.bold(name)}${edge(`${rule(inner + 1 - widthOf(name))}\u256E`)}` : edge(`\u256D${rule(inner + 2)}\u256E`);
   const body = lines2.map((text2) => `${edge(BAR)} ${pad(fit(text2, inner), inner)} ${edge(BAR)}`);
   const bottom = edge(`\u2570${rule(inner + 2)}\u256F`);
   return [top, ...body, bottom].map((line3) => `  ${line3}`);
 }
 function rail(p, title, note) {
-  return `  ${p.tone("line", "\u256D\u2500")} ${p.tone("file", title)}  ${p.dim(note)}`;
+  return `  ${p.tone("line", "\u256D\u2500")} ${p.bold(title)}  ${p.dim(note)}`;
 }
 function railLine(p, text2) {
   return `  ${p.tone("line", BAR)} ${text2}`;
@@ -226187,46 +226907,11 @@ var init_box = __esm({
   }
 });
 
-// packages/cli/dist/src/term/summary.js
-function shown(stat, progress) {
-  return String(Math.round(stat.value * progress));
-}
-function summary2(p, stats2, width, progress = 1) {
-  const value2 = (stat) => {
-    const text2 = p.bold(shown(stat, progress));
-    return stat.tone ? p.tone(stat.tone, text2) : text2;
-  };
-  const cells2 = stats2.map((s) => Math.max(widthOf(s.label), String(s.value).length) + 2);
-  const borders = stats2.length + 1;
-  const total = 2 + borders + cells2.reduce((a, b) => a + b, 0);
-  if (total >= width) {
-    const parts = stats2.map((s) => `${value2(s)} ${p.dim(s.label)}`);
-    const line3 = `  ${parts.join(p.dim("  \xB7  "))}`;
-    return widthOf(line3) < width ? [line3] : parts.map((part) => `  ${part}`);
-  }
-  const edge = (text2) => p.tone("line", text2);
-  const rule = (left, join15, right) => `  ${edge(left + cells2.map((c) => "\u2500".repeat(c)).join(join15) + right)}`;
-  const cell = (text2, i) => ` ${pad(text2, cells2[i] - 1)}`;
-  const row = (texts) => `  ${edge("\u2502")}${texts.map(cell).join(edge("\u2502"))}${edge("\u2502")}`;
-  return [
-    rule("\u256D", "\u252C", "\u256E"),
-    row(stats2.map(value2)),
-    row(stats2.map((s) => p.dim(s.label))),
-    rule("\u2570", "\u2534", "\u256F")
-  ];
-}
-var init_summary2 = __esm({
-  "packages/cli/dist/src/term/summary.js"() {
-    "use strict";
-    init_width();
-  }
-});
-
 // packages/cli/dist/src/term/table.js
 function widths(columns, rows3, width) {
   const natural = columns.map((c, i) => Math.max(widthOf(c.title), ...rows3.map((r) => widthOf(r.cells[i] ?? ""))));
   const sized = [...natural];
-  const room = width - INDENT - GAP3 * (columns.length - 1);
+  const room = width - INDENT2 - GAP2 * (columns.length - 1);
   for (let i = columns.length - 1; i >= 0; i--) {
     const over = sized.reduce((a, b) => a + b, 0) - room;
     if (over <= 0)
@@ -226237,11 +226922,11 @@ function widths(columns, rows3, width) {
 }
 function table3(p, columns, rows3, width) {
   const sized = widths(columns, rows3, width);
-  const line3 = (cells2) => " ".repeat(INDENT) + cells2.map((cell, i) => {
+  const line3 = (cells2) => " ".repeat(INDENT2) + cells2.map((cell, i) => {
     const shown2 = fit(cell, sized[i]);
     return i === cells2.length - 1 ? shown2 : pad(shown2, sized[i]);
-  }).join(" ".repeat(GAP3));
-  const noteIndent = sized.slice(0, -1).reduce((a, b) => a + b + GAP3, INDENT);
+  }).join(" ".repeat(GAP2));
+  const noteIndent = sized.slice(0, -1).reduce((a, b) => a + b + GAP2, INDENT2);
   const lines2 = [line3(columns.map((c) => p.dim(c.title.toUpperCase())))];
   for (const row of rows3) {
     lines2.push(line3(row.cells));
@@ -226250,13 +226935,13 @@ function table3(p, columns, rows3, width) {
   }
   return lines2;
 }
-var GAP3, INDENT;
+var GAP2, INDENT2;
 var init_table = __esm({
   "packages/cli/dist/src/term/table.js"() {
     "use strict";
     init_width();
-    GAP3 = 2;
-    INDENT = 2;
+    GAP2 = 2;
+    INDENT2 = 2;
   }
 });
 
@@ -226296,18 +226981,25 @@ var init_tree = __esm({
 });
 
 // packages/cli/dist/src/term/badge.js
+function split(text2) {
+  const words3 = text2.split(" ");
+  const at2 = words3.findIndex((word3, i) => i > 0 && DETAIL.test(word3));
+  if (at2 < 0)
+    return [text2, ""];
+  return [words3.slice(0, at2).join(" "), ` ${words3.slice(at2).join(" ")}`];
+}
 function status(p, { tone, text: text2 }) {
-  const at2 = text2.indexOf(" ");
-  const word3 = (at2 < 0 ? text2 : text2.slice(0, at2)).toUpperCase();
-  const rest2 = at2 < 0 ? "" : text2.slice(at2);
-  return `${p.pill(tone, word3)}${p.tone(tone, rest2)}`;
+  const [label4, rest2] = split(text2);
+  return `${p.pill(tone, label4.toUpperCase())}${p.tone(tone, rest2)}`;
 }
 function lowConfidence2(p) {
   return p.pill("line", "low confidence");
 }
+var DETAIL;
 var init_badge = __esm({
   "packages/cli/dist/src/term/badge.js"() {
     "use strict";
+    DETAIL = /[\d(]/;
   }
 });
 
@@ -226335,8 +227027,6 @@ function badge(event, today) {
   const flag = eventFlag(event, today.toISOString().slice(0, 10));
   if (!flag)
     return null;
-  if (flag.endsWith("(Jev)"))
-    return { tone: "jev", text: flag };
   return { tone: flag === "breaking" ? "red" : "amber", text: flag };
 }
 function more(p, items2, limit) {
@@ -226346,7 +227036,7 @@ function more(p, items2, limit) {
 }
 function matchNode(p, m, root) {
   const where = `${m.repo ? `${m.repo}:` : ""}${m.file}:${m.line}`;
-  const shown2 = p.tone("file", where);
+  const shown2 = where;
   const place2 = m.repo ? shown2 : p.anchor(pathToFileURL2(join12(root, m.file)).href, shown2);
   const text2 = m.text.trim();
   const code2 = text2.length > CODE2 ? `${text2.slice(0, CODE2 - 1)}\u2026` : text2;
@@ -226415,6 +227105,75 @@ var init_findings = __esm({
   }
 });
 
+// packages/cli/dist/src/term/summary.js
+function shown(stat, progress) {
+  return String(Math.round(stat.value * progress));
+}
+function summary2(p, stats2, width, progress = 1) {
+  const value2 = (stat) => {
+    const text2 = p.bold(shown(stat, progress));
+    return stat.tone ? p.tone(stat.tone, text2) : text2;
+  };
+  const cells2 = stats2.map((s) => Math.max(widthOf(s.label), String(s.value).length) + 2);
+  const borders = stats2.length + 1;
+  const total = 2 + borders + cells2.reduce((a, b) => a + b, 0);
+  if (total >= width) {
+    const parts = stats2.map((s) => `${value2(s)} ${p.dim(s.label)}`);
+    const line3 = `  ${parts.join(p.dim("  \xB7  "))}`;
+    return widthOf(line3) < width ? [line3] : parts.map((part) => `  ${part}`);
+  }
+  const edge = (text2) => p.tone("line", text2);
+  const rule = (left, join15, right) => `  ${edge(left + cells2.map((c) => "\u2500".repeat(c)).join(join15) + right)}`;
+  const cell = (text2, i) => ` ${pad(text2, cells2[i] - 1)}`;
+  const row = (texts) => `  ${edge("\u2502")}${texts.map(cell).join(edge("\u2502"))}${edge("\u2502")}`;
+  return [
+    rule("\u256D", "\u252C", "\u256E"),
+    row(stats2.map(value2)),
+    row(stats2.map((s) => p.dim(s.label))),
+    rule("\u2570", "\u2534", "\u256F")
+  ];
+}
+var init_summary2 = __esm({
+  "packages/cli/dist/src/term/summary.js"() {
+    "use strict";
+    init_width();
+  }
+});
+
+// packages/cli/dist/src/commands/inspect/top.js
+function catOf(p, given) {
+  const width = given.width ?? Infinity;
+  const wanted2 = given.cat && p.term.rich && Number.isFinite(width);
+  const cat = wanted2 && width >= CAT_FROM2 ? HEAD : null;
+  return { cat, side: cat ? 2 + widthOfCat(cat) + 2 : 0 };
+}
+function topLines(p, view, progress = 1) {
+  const head = view.head.length > 0 ? ["", ...view.head] : [];
+  const text2 = [view.header, ...head, ...statLines(p, view, progress)];
+  return view.cat ? beside(drawCat(p, view.cat), text2) : text2;
+}
+function statLines(p, view, progress = 1) {
+  if (!view.stats)
+    return [];
+  const full = Number.isFinite(view.width) ? view.width : DEFAULT_COLUMNS;
+  const width = full - view.side;
+  return [
+    "",
+    fit(`  ${p.dim(view.stats.title)}`, width),
+    ...summary2(p, view.stats.stats, width, progress)
+  ];
+}
+var CAT_FROM2;
+var init_top = __esm({
+  "packages/cli/dist/src/commands/inspect/top.js"() {
+    "use strict";
+    init_cat();
+    init_summary2();
+    init_width();
+    CAT_FROM2 = 100;
+  }
+});
+
 // packages/cli/dist/src/commands/inspect/human.js
 function facts2(p, lines2, width) {
   const pairs2 = lines2.map((line3) => {
@@ -226425,17 +227184,14 @@ function facts2(p, lines2, width) {
   const room = width - 6 - key2 - 2;
   return pairs2.flatMap(([k, v]) => wrap2(v, room).map((part, i) => `${p.dim(pad(i === 0 ? k : "", key2))}  ${part}`));
 }
-function viewTop(view) {
-  return view.head.length > 0 ? [view.header, "", ...view.head] : [view.header];
-}
 function eventStats(total, breaking, matched, jev) {
   const list2 = [
     { value: total, label: total === 1 ? "event" : "events" },
-    { value: breaking, label: "breaking", tone: breaking ? "red" : "green" },
-    { value: matched, label: "matched in code", tone: "accent" }
+    { value: breaking, label: "breaking", tone: breaking ? "red" : "accent" },
+    { value: matched, label: "matched in code" }
   ];
   if (jev > 0)
-    list2.push({ value: jev, label: "to check (Jev)", tone: "jev" });
+    list2.push({ value: jev, label: "to review", tone: "amber" });
   return list2;
 }
 function stats(match, jev) {
@@ -226496,9 +227252,20 @@ function inspectView(p, raw, given) {
   const result = cleanAll(raw);
   const command = field(given.command);
   const width = given.width ?? Infinity;
-  const header2 = fit(p.header(`inspect ${result.provider}`, command), width);
+  const { cat, side: side2 } = catOf(p, given);
+  const room = width - side2;
+  const header2 = fit(p.header(`inspect ${result.provider}`, command), room);
   const head = [];
-  const view = { header: header2, head, stats: null, body: [], next: [], width };
+  const view = {
+    header: header2,
+    head,
+    stats: null,
+    body: [],
+    next: [],
+    width,
+    cat,
+    side: side2
+  };
   const covered = coverageLines(p, result.coverage, [result], width);
   if (!result.surface.sdk) {
     head.push(`  ${p.dim("\u25CB")} ${result.provider}: not detected in ${result.path}`);
@@ -226507,8 +227274,8 @@ function inspectView(p, raw, given) {
   const plain5 = renderText(result).split("\n");
   const at2 = plain5.findIndex((line3) => TOTAL.test(line3));
   const title = providers[result.provider]?.title ?? result.provider;
-  const fact = facts2(p, at2 < 0 ? plain5 : plain5.slice(0, at2), width);
-  head.push(...panel(p, fact, width, title));
+  const fact = facts2(p, at2 < 0 ? plain5 : plain5.slice(0, at2), room);
+  head.push(...panel(p, fact, room, title));
   const next = nextSteps(p, steps(result, command), width);
   if (at2 < 0)
     return { ...view, body: covered, next };
@@ -226517,16 +227284,6 @@ function inspectView(p, raw, given) {
   const pin = result.surface.apiVersion?.value;
   const body = [...findings(p, result, opts, pin), ...covered];
   return { ...view, stats: stats(TOTAL.exec(plain5[at2]), jev), body, next };
-}
-function statLines(p, view, progress = 1) {
-  if (!view.stats)
-    return [];
-  const width = Number.isFinite(view.width) ? view.width : DEFAULT_COLUMNS;
-  return [
-    "",
-    fit(`  ${p.dim(view.stats.title)}`, width),
-    ...summary2(p, view.stats.stats, width, progress)
-  ];
 }
 var TOTAL;
 var init_human3 = __esm({
@@ -226538,12 +227295,12 @@ var init_human3 = __esm({
     init_clean();
     init_heading();
     init_next();
-    init_summary2();
     init_table();
     init_tree();
     init_width();
     init_coverage3();
     init_findings();
+    init_top();
     TOTAL = /^(.*): (\d+) events, (\d+) breaking, (\d+) matched in code$/;
   }
 });
@@ -226675,7 +227432,7 @@ function section4(p, result, opts) {
     out.push("", ...notMatched(p, rest2, opts.width));
   return out;
 }
-function skipped(p, entry, width) {
+function skipped2(p, entry, width) {
   const title = providers[entry.provider]?.title ?? entry.provider;
   return [
     "",
@@ -226709,18 +227466,28 @@ function overviewView(p, raw, given) {
   const { inspections: results, unavailable } = cleanAll(raw);
   const command = field(given.command);
   const width = given.width ?? Infinity;
-  const header2 = fit(p.header("inspect", command), width);
+  const { cat, side: side2 } = catOf(p, given);
+  const header2 = fit(p.header("inspect", command), width - side2);
   const head = [];
-  const view = { header: header2, head, stats: null, body: [], next: [], width };
+  const view = {
+    header: header2,
+    head,
+    stats: null,
+    body: [],
+    next: [],
+    width,
+    cat,
+    side: side2
+  };
   const covered = coverageLines(p, raw.coverage, results, width);
   if (results.length + unavailable.length === 0) {
     head.push(`  ${p.dim("\u25CB")} ${noSdk2(field(given.root))}`);
     return { ...view, body: covered };
   }
-  const found = results.flatMap((result) => given.all ? detailed(p, result, { ...given, width }) : section4(p, result, { ...given, root: result.path, width }));
+  const found = results.flatMap((result) => given.all ? detailed(p, result, { ...given, width, cat: false }) : section4(p, result, { ...given, root: result.path, width }));
   const body = [
     ...found,
-    ...unavailable.flatMap((entry) => skipped(p, entry, width)),
+    ...unavailable.flatMap((entry) => skipped2(p, entry, width)),
     ...covered
   ];
   const next = nextSteps(p, steps2(results, command, given.all), width);
@@ -226741,6 +227508,7 @@ var init_overview = __esm({
     init_findings();
     init_human3();
     init_tally();
+    init_top();
   }
 });
 
@@ -226753,20 +227521,19 @@ async function printView(build, out, env, clock) {
   const print2 = (lines2) => out.write(`${lines2.join("\n")}
 `);
   if (!view.stats || !animates(env, out)) {
-    print2([...viewTop(view), ...statLines(p, view), ...tail]);
+    print2([...topLines(p, view), ...tail]);
     return;
   }
-  print2(viewTop(view));
-  const draw = (t) => statLines(p, view, ease(t));
+  const draw = (t) => topLines(p, view, ease(t));
   await play(out, draw, { ...REVEAL, clock }).done;
   print2(tail);
 }
 function printHuman(result, opts, out = process.stdout, env = process.env, clock) {
-  const build = (p, width) => inspectView(p, result, { ...opts, width });
+  const build = (p, width) => inspectView(p, result, { ...opts, width, cat: true });
   return printView(build, out, env, clock);
 }
 function printOverview(overview, opts, out = process.stdout, env = process.env, clock) {
-  const build = (p, width) => overviewView(p, overview, { ...opts, width });
+  const build = (p, width) => overviewView(p, overview, { ...opts, width, cat: true });
   return printView(build, out, env, clock);
 }
 var REVEAL;
@@ -226779,6 +227546,7 @@ var init_print = __esm({
     init_usage();
     init_human3();
     init_overview();
+    init_top();
     REVEAL = { duration: 72, frame: 12 };
   }
 });
@@ -226814,7 +227582,7 @@ var init_target2 = __esm({
 });
 
 // packages/cli/dist/src/commands/inspect/cli.js
-import { resolve as resolve10 } from "node:path";
+import { resolve as resolve12 } from "node:path";
 function versionError(provider, version2) {
   if (version2 === void 0)
     return null;
@@ -226853,7 +227621,7 @@ async function runInspect(usage2, args, flags) {
   if (target2.provider === void 0) {
     const overview = await inspectEvery(path2, progress);
     await progress.finish();
-    const root = resolve10(path2);
+    const root = resolve12(path2);
     if (flags.json)
       console.log(JSON.stringify({ path: root, ...overview }, null, 2));
     else if (!terminal(process.stdout).rich)
@@ -227974,7 +228742,7 @@ var require_foldFlowLines = __commonJS({
         else
           end = lineWidth - indentAtStart;
       }
-      let split = void 0;
+      let split2 = void 0;
       let prev = void 0;
       let overflow = false;
       let i = -1;
@@ -228007,18 +228775,18 @@ var require_foldFlowLines = __commonJS({
           if (mode === FOLD_BLOCK)
             i = consumeMoreIndentedLines(text2, i, indent2.length);
           end = i + indent2.length + endStep;
-          split = void 0;
+          split2 = void 0;
         } else {
           if (ch === " " && prev && prev !== " " && prev !== "\n" && prev !== "	") {
             const next = text2[i + 1];
             if (next && next !== " " && next !== "\n" && next !== "	")
-              split = i;
+              split2 = i;
           }
           if (i >= end) {
-            if (split) {
-              folds.push(split);
-              end = split + endStep;
-              split = void 0;
+            if (split2) {
+              folds.push(split2);
+              end = split2 + endStep;
+              split2 = void 0;
             } else if (mode === FOLD_QUOTED) {
               while (prev === " " || prev === "	") {
                 prev = ch;
@@ -228031,7 +228799,7 @@ var require_foldFlowLines = __commonJS({
               folds.push(j);
               escapedFolds[j] = true;
               end = j + endStep;
-              split = void 0;
+              split2 = void 0;
             } else {
               overflow = true;
             }
@@ -231565,13 +232333,13 @@ var require_resolve_block_scalar = __commonJS({
       return { mode, indent: indent2, chomp, comment, length };
     }
     function splitLines(source) {
-      const split = source.split(/\n( *)/);
-      const first = split[0];
+      const split2 = source.split(/\n( *)/);
+      const first = split2[0];
       const m = first.match(/^( *)/);
       const line0 = m?.[1] ? [m[1], first.slice(m[1].length)] : ["", first];
       const lines2 = [line0];
-      for (let i = 1; i < split.length; i += 2)
-        lines2.push([split[i], split[i + 1]]);
+      for (let i = 1; i < split2.length; i += 2)
+        lines2.push([split2[i], split2[i + 1]]);
       return lines2;
     }
     exports.resolveBlockScalar = resolveBlockScalar;
@@ -234716,7 +235484,7 @@ function gitCommands(paths2, remote) {
   ];
 }
 var import_yaml2, CONFIG_PATH, WORKFLOW_PATH, ACTION_REPO, CHECKOUT, SHA2;
-var init_files2 = __esm({
+var init_files3 = __esm({
   "packages/cli/dist/src/commands/init/files.js"() {
     "use strict";
     init_src6();
@@ -234813,7 +235581,7 @@ var init_flags = __esm({
   "packages/cli/dist/src/commands/init/flags.js"() {
     "use strict";
     init_src5();
-    init_files2();
+    init_files3();
     INIT_USAGE = [
       "usage: upseam init [path] [--yes | --dry-run] [--json] [--force]",
       "              [--ignore-provider <id>]... [--ignore-path <pattern>]...",
@@ -234876,12 +235644,17 @@ var init_help = __esm({
         ]
       },
       fix: {
-        summary: "Patch one mechanical change with your model: print the diff or open a pull request.",
+        summary: "Patch one mechanical API change: open a pull request, or print the diff.",
         usage: usageOf("fix"),
         details: [
+          "In a git checkout, upseam fix shows the change it will patch, asks y/N, writes the patch, shows the diff and opens a pull request with GITHUB_TOKEN on the github.com repository of the origin remote.",
+          "A retired model id with exactly one replacement named by the vendor is replaced directly: no model and no model key. Other changes are written by your model, with the key in the vendor's variable (for example ANTHROPIC_API_KEY) or UPSEAM_MODEL_KEY.",
+          "--github <o/r>  open the pull request on this repository instead of origin's",
+          "--yes           open the pull request without asking",
           "--dry-run       print the diff and push nothing",
           "--vendor, --model, --base-url   the model that writes the patch",
           "--verify is refused: code the model wrote never runs in a job that can push",
+          "Upseam pushes only upseam/<provider>-<version> branches, never your current branch, and refuses a branch that has commits it did not push.",
           "Exit codes: 0 done, 1 error, 2 usage"
         ]
       },
@@ -234911,9 +235684,9 @@ var init_help = __esm({
 });
 
 // packages/cli/dist/src/commands/init/ask.js
-async function until(ask2, say3, question2, check) {
+async function until(ask2, say3, question3, check) {
   for (let i = 0; i < ATTEMPTS2; i++) {
-    const result = check((await ask2(question2)).trim());
+    const result = check((await ask2(question3)).trim());
     if ("value" in result)
       return result.value;
     say3(result.error);
@@ -234923,8 +235696,8 @@ async function until(ask2, say3, question2, check) {
 async function askConfig(ask2, detection, say3 = () => {
 }) {
   const ids = detection.sdks.map((s) => s.provider);
-  const ignoreProviders = ids.length ? await until(ask2, say3, `Providers Upseam should not watch here (${ids.join(", ")}; empty for none): `, valid((list2) => ({ ...EMPTY, ignoreProviders: list2 }))) : [];
-  const ignorePaths = await until(ask2, say3, "Paths Upseam should ignore, such as legacy/** (empty for none): ", valid((list2) => ({ ...EMPTY, ignorePaths: list2 })));
+  const ignoreProviders = ids.length ? await until(ask2, say3, `Providers Upseam should not watch here (${ids.join(", ")}; empty for none): `, valid((list2) => ({ ...EMPTY2, ignoreProviders: list2 }))) : [];
+  const ignorePaths = await until(ask2, say3, "Paths Upseam should ignore, such as legacy/** (empty for none): ", valid((list2) => ({ ...EMPTY2, ignorePaths: list2 })));
   return { ignoreProviders, ignorePaths };
 }
 async function askMethod(ask2, say3) {
@@ -234960,17 +235733,17 @@ async function askMethod(ask2, say3) {
     }
   };
 }
-async function confirm(ask2, question2) {
-  return /^y(es)?$/i.test((await ask2(`${question2} [y/N]: `)).trim());
+async function confirm(ask2, question3) {
+  return /^y(es)?$/i.test((await ask2(`${question3} [y/N]: `)).trim());
 }
-var ATTEMPTS2, EMPTY, items, valid, plain4;
+var ATTEMPTS2, EMPTY2, items, valid, plain4;
 var init_ask = __esm({
   "packages/cli/dist/src/commands/init/ask.js"() {
     "use strict";
     init_src5();
-    init_files2();
+    init_files3();
     ATTEMPTS2 = 3;
-    EMPTY = { ignoreProviders: [], ignorePaths: [] };
+    EMPTY2 = { ignoreProviders: [], ignorePaths: [] };
     items = (reply) => reply.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean);
     valid = (build) => (reply) => {
       const list2 = items(reply);
@@ -234983,7 +235756,7 @@ var init_ask = __esm({
 
 // packages/cli/dist/src/commands/init/detect.js
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { resolve as resolve11 } from "node:path";
+import { resolve as resolve13 } from "node:path";
 function git2(cwd, args) {
   const run2 = spawnSync2("git", ["-C", cwd, ...args], {
     encoding: "utf8",
@@ -234992,7 +235765,7 @@ function git2(cwd, args) {
   return run2.status === 0 ? run2.stdout.trim() : null;
 }
 function githubRepo(url) {
-  const m = url.match(GITHUB);
+  const m = url.match(GITHUB2);
   return m ? `${m[1]}/${m[2]}` : null;
 }
 function repository(path2) {
@@ -235030,7 +235803,7 @@ function findSdks(root) {
   return Object.keys(providers).flatMap((id) => sdkOf(id, root));
 }
 async function detectSteps(path2, step) {
-  const { root, github, remote } = repository(resolve11(path2));
+  const { root, github, remote } = repository(resolve13(path2));
   const ids = Object.keys(providers);
   const sdks2 = [];
   for (const [i, id] of ids.entries()) {
@@ -235040,10 +235813,10 @@ async function detectSteps(path2, step) {
   return { root, github, remote, sdks: sdks2 };
 }
 function detect2(path2) {
-  const { root, github, remote } = repository(resolve11(path2));
+  const { root, github, remote } = repository(resolve13(path2));
   return { root, github, remote, sdks: findSdks(root) };
 }
-var GITHUB;
+var GITHUB2;
 var init_detect = __esm({
   "packages/cli/dist/src/commands/init/detect.js"() {
     "use strict";
@@ -235051,7 +235824,7 @@ var init_detect = __esm({
     init_src4();
     init_src3();
     init_failure();
-    GITHUB = /^(?:https?:\/\/(?:[^@/]+@)?github\.com\/|(?:ssh:\/\/)?git@github\.com[:/])([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/;
+    GITHUB2 = /^(?:https?:\/\/(?:[^@/]+@)?github\.com\/|(?:ssh:\/\/)?git@github\.com[:/])([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/;
   }
 });
 
@@ -235323,8 +236096,8 @@ function styleText(line3, p) {
   if (!state2)
     return line3;
   const good = state2[2] === "written" || state2[2] === "overwritten" || state2[2].startsWith("already");
-  const icon = good ? p.tone("green", "\u2713") : p.tone("amber", "\u25CB");
-  return `${icon} ${p.tone("file", state2[1])}: ${good ? state2[2] : p.dim(state2[2])}`;
+  const icon = good ? p.tone("accent", "\u2713") : p.tone("amber", "\u25CB");
+  return `${icon} ${p.bold(state2[1])}: ${good ? state2[2] : p.dim(state2[2])}`;
 }
 function styleInit(text2, p, width = Infinity) {
   let inFile = false;
@@ -235359,7 +236132,7 @@ var init_output = __esm({
 });
 
 // packages/cli/dist/src/commands/init/init.js
-import { createInterface } from "node:readline/promises";
+import { createInterface as createInterface2 } from "node:readline/promises";
 function plan(root, path2, content3, force) {
   const target2 = inspectTarget2(root, path2);
   if (target2.kind === "other")
@@ -235452,7 +236225,7 @@ async function initCommand(argv) {
     if (!flags.json)
       console.log(paint2 ? styleInit(safe, paint2, width) : safe);
   };
-  const rl = interactive && result.watch ? createInterface({ input: process.stdin, output: process.stdout }) : void 0;
+  const rl = interactive && result.watch ? createInterface2({ input: process.stdin, output: process.stdout }) : void 0;
   const ask2 = rl && ((q) => rl.question(q));
   try {
     if (result.watch) {
@@ -235490,7 +236263,7 @@ var init_init = __esm({
     init_src6();
     init_ask();
     init_detect();
-    init_files2();
+    init_files3();
     init_fs();
     init_flags();
     init_output();
@@ -235574,8 +236347,8 @@ async function run(argv) {
     return fixed;
   if (command === "report") {
     const { github, repo, summary: summary4 } = values;
-    const sources = [github, values["dry-run"] || void 0, summary4];
-    if (rest2.length > 0 || values.json || values["api-version"] !== void 0 || values.task || sources.every((source) => source === void 0) || github !== void 0 && !REPO2.test(github) || repo !== void 0 && (github !== void 0 || !REPO2.test(repo))) {
+    const sources2 = [github, values["dry-run"] || void 0, summary4];
+    if (rest2.length > 0 || values.json || values["api-version"] !== void 0 || values.task || sources2.every((source) => source === void 0) || github !== void 0 && !REPO2.test(github) || repo !== void 0 && (github !== void 0 || !REPO2.test(repo))) {
       console.error(USAGE2);
       return 2;
     }
