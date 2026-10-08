@@ -64,13 +64,22 @@ jobs:
 | `group`       | set by the App's event   | For the Upseam App: the group of an `upseam-generate` or `upseam-agent` dispatch event.         |
 | `agent-edits` | set by the App's event   | For the Upseam App: take the patch from your own coding agent's edits instead of a model.       |
 | `check-only`  | `false`                  | For the Upseam App: check the patch with the Upseam gates without pushing.                      |
+| `mode`        | `consumer`               | `vendor` sends the API changes of your release to Upseam: see [For API vendors](#for-api-vendors). |
+| `base`        | empty                    | With `mode: vendor`: the git ref to compare with. Default the previous release tag.              |
+| `spec`        | empty                    | With `mode: vendor`: the OpenAPI document, relative to the repository root. Default from `upseam.vendor.yml`. |
+| `upseam-url`  | `https://app.upseam.dev` | With `mode: vendor`: the Upseam App that receives the change events.                            |
+| `dry-run`     | `false`                  | With `mode: vendor`: print the change events and send nothing.                                  |
 
 ## What leaves the runner
 
 - **Free report:** nothing. The detector runs on the runner with the change data bundled in the Action; no token is passed to the step. Only `actions/setup-node` may download Node.js 22.
 - **`issue: true`:** GitHub API calls to your own repository with `token`, to read, create and edit the issue.
 - **`fix: true`:** GitHub API calls with `token` to look up pull requests, push one branch and open one, and, except for a direct model replacement, calls to your model vendor with your key. They carry the change and the matched files, with likely secrets replaced first: [Secrets in your files](https://docs.upseam.dev/security/#secrets-in-your-files). The key goes only to that vendor and is never printed or written.
-- The Action sends nothing to Upseam servers.
+- **`mode: vendor`:** one request to Upseam with the change events of your release and the job's GitHub OIDC token. No secret is used. Without `mode: vendor`, the Action sends nothing to Upseam servers.
+
+## For API vendors
+
+If you publish an API with an OpenAPI document, `npx @upseam/cli vendor init` writes `upseam.vendor.yml` and a workflow that runs this Action with `mode: vendor` on each published release. The Action diffs the OpenAPI document between the previous release tag and the release, and sends the change events to Upseam, which delivers them to your users' repositories. The job needs `id-token: write` and a checkout with `fetch-depth: 0`. Upseam accepts the events only from a repository registered for that provider.
 
 ## More
 

@@ -41,15 +41,36 @@ inputs:
   check-only:
     description: With group, check the patch with the Upseam gates without committing or pushing; the step fails when the gates reject. When they pass, the step copies the files listed in the event's client_payload.files from the checkout to $RUNNER_TEMP/upseam-edits, outside the workspace, for the agent job of the upseam-agent workflow to upload.
     default: "false"
+  mode:
+    description: consumer (default) finds API changes that affect this repository. vendor is for an API vendor's own repository. It diffs the OpenAPI document named in upseam.vendor.yml between the previous release tag and the released commit, and sends the change events to Upseam with the job's GitHub OIDC token. Needs id-token write and a checkout with fetch-depth 0.
+    default: consumer
+  base:
+    description: With mode vendor, the git ref to compare the OpenAPI document with. Default the previous release tag.
+    default: ""
+  spec:
+    description: With mode vendor, the OpenAPI document to diff, relative to the repository root. Default the spec in upseam.vendor.yml.
+    default: ""
+  upseam-url:
+    description: With mode vendor, the Upseam App that receives the change events.
+    default: https://app.upseam.dev
+  dry-run:
+    description: With mode vendor, set to true to print the change events and send nothing.
+    default: "false"
 runs:
   using: composite
   steps:
+    - name: Check mode
+      if: inputs.mode != 'consumer' && inputs.mode != 'vendor'
+      shell: bash
+      run: |
+        echo "::error::The mode input is consumer or vendor."
+        exit 1
     - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
       with:
         node-version: 22
         package-manager-cache: false
     - name: Report
-      if: inputs.group == ''
+      if: inputs.mode == 'consumer' && inputs.group == ''
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.issue == 'true' && inputs.token || '' }}
@@ -65,14 +86,14 @@ runs:
         fi
         bash "$GITHUB_ACTION_PATH/quiet.sh" node "$UPSEAM_MAIN" "${args[@]}"
     - name: Fix - refuse verify
-      if: inputs.fix == 'true' && inputs.group == '' && inputs.verify != ''
+      if: inputs.mode == 'consumer' && inputs.fix == 'true' && inputs.group == '' && inputs.verify != ''
       shell: bash
       run: |
         echo "::error::The verify input is refused: in the job that pushes, a verify command could change PATH or the environment of later steps through the runner's file commands, rewrite the Action's own files, or use sudo, and so reach the token. Leave verify empty and run your tests in your usual pull request workflow with contents: read. See docs/usage/action.md#patch-pull-requests."
         exit 1
     - name: Fix - existing pull requests
       id: pulls
-      if: inputs.fix == 'true' && inputs.group == '' && inputs.verify == ''
+      if: inputs.mode == 'consumer' && inputs.fix == 'true' && inputs.group == '' && inputs.verify == ''
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.token }}
@@ -84,7 +105,7 @@ runs:
         echo "dir=$dir" >> "$GITHUB_OUTPUT"
     - name: Fix - generate
       id: generate
-      if: inputs.fix == 'true' && inputs.group == '' && inputs.verify == ''
+      if: inputs.mode == 'consumer' && inputs.fix == 'true' && inputs.group == '' && inputs.verify == ''
       shell: bash
       env:
         UPSEAM_MAIN: ${{ github.action_path }}/dist/upseam.mjs
@@ -100,7 +121,7 @@ runs:
           echo "manifest=$(sha256sum "$UPSEAM_DIR/stage/manifest.json" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
         fi
     - name: Fix - publish
-      if: inputs.fix == 'true' && inputs.group == '' && inputs.verify == '' && steps.generate.outputs.manifest != ''
+      if: inputs.mode == 'consumer' && inputs.fix == 'true' && inputs.group == '' && inputs.verify == '' && steps.generate.outputs.manifest != ''
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.token }}
@@ -110,7 +131,7 @@ runs:
         UPSEAM_MANIFEST: ${{ steps.generate.outputs.manifest }}
       run: bash "$GITHUB_ACTION_PATH/quiet.sh" node "$UPSEAM_MAIN" fix "$UPSEAM_PATH" --github "$GITHUB_REPOSITORY" --publish "$UPSEAM_DIR/stage" --manifest "$UPSEAM_MANIFEST"
     - name: Generate for the Upseam App
-      if: inputs.group != ''
+      if: inputs.mode == 'consumer' && inputs.group != ''
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.token }}
@@ -146,3 +167,19 @@ runs:
             fi
           done < <(jq -j '.[] | ., "\u0000"' <<<"$UPSEAM_FILES")
         fi
+    - name: Vendor - publish changes
+      if: inputs.mode == 'vendor'
+      shell: bash
+      env:
+        UPSEAM_MAIN: ${{ github.action_path }}/dist/upseam.mjs
+        UPSEAM_PATH: ${{ inputs.path }}
+        UPSEAM_BASE: ${{ inputs.base }}
+        UPSEAM_SPEC: ${{ inputs.spec }}
+        UPSEAM_URL: ${{ inputs.upseam-url }}
+        UPSEAM_DRY_RUN: ${{ inputs.dry-run }}
+      run: |
+        args=(vendor publish "$UPSEAM_PATH" --upseam-url "$UPSEAM_URL")
+        if [ -n "$UPSEAM_BASE" ]; then args+=(--base "$UPSEAM_BASE"); fi
+        if [ -n "$UPSEAM_SPEC" ]; then args+=(--spec "$UPSEAM_SPEC"); fi
+        if [ "$UPSEAM_DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+        bash "$GITHUB_ACTION_PATH/quiet.sh" node "$UPSEAM_MAIN" "${args[@]}"
