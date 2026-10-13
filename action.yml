@@ -1,5 +1,5 @@
 name: Upseam
-description: Finds external API changes that affect this repository and writes a report of the SDKs, API versions and affected lines to the run summary; optionally keeps one issue up to date.
+description: Finds third-party API changes that affect your code and reports the SDKs, API versions and lines involved.
 author: Upseam
 branding:
   icon: eye
