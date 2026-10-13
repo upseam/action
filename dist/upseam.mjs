@@ -235353,7 +235353,7 @@ var init_package = __esm({
   "packages/cli/dist/package.json"() {
     package_default = {
       name: "@upseam/cli",
-      version: "0.5.0",
+      version: "0.6.0",
       description: "Finds external API changes that affect a repository: SDK, pinned API version, changes since, matched code",
       license: "MIT",
       type: "module",
