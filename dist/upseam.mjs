@@ -528,6 +528,30 @@ var init_src2 = __esm({
   }
 });
 
+// packages/scan/dist/src/config-files.js
+function isConfigFile(path2) {
+  const name = path2.slice(path2.lastIndexOf("/") + 1);
+  if (LOCKFILES.has(name))
+    return false;
+  return DOTENV.test(name) || CONFIG_EXTENSION.test(name);
+}
+var LOCKFILES, CONFIG_EXTENSION, DOTENV;
+var init_config_files = __esm({
+  "packages/scan/dist/src/config-files.js"() {
+    "use strict";
+    LOCKFILES = /* @__PURE__ */ new Set([
+      "package-lock.json",
+      "npm-shrinkwrap.json",
+      "pnpm-lock.yaml",
+      "yarn.lock",
+      "Cargo.lock",
+      "poetry.lock"
+    ]);
+    CONFIG_EXTENSION = /\.(?:ya?ml|json|toml)$/i;
+    DOTENV = /^\.env(?:\.[\w.-]+)?$/;
+  }
+});
+
 // packages/scan/dist/src/languages.js
 import { extname } from "node:path";
 function languageOf(file) {
@@ -566,6 +590,7 @@ import { readdirSync as readdirSync2, readFileSync as readFileSync2, statSync } 
 import { extname as extname2, join as join2, relative } from "node:path";
 function walkFiles(repoPath2) {
   const files = [];
+  const configs = [];
   const languages = {};
   const walk2 = (dir) => {
     let entries;
@@ -575,7 +600,7 @@ function walkFiles(repoPath2) {
       return;
     }
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-      if (files.length >= LIMIT)
+      if (files.length >= LIMIT && configs.length >= CONFIG_LIMIT)
         return;
       if (entry.isSymbolicLink())
         continue;
@@ -587,6 +612,13 @@ function walkFiles(repoPath2) {
       }
       if (!entry.isFile())
         continue;
+      if (isConfigFile(entry.name)) {
+        if (configs.length < CONFIG_LIMIT)
+          configs.push(path2);
+        continue;
+      }
+      if (files.length >= LIMIT)
+        continue;
       const extension = extname2(entry.name);
       const unread = UNREAD_LANGUAGES.get(extension);
       if (SOURCE_LANGUAGES.has(extension))
@@ -596,13 +628,12 @@ function walkFiles(repoPath2) {
     }
   };
   walk2(repoPath2);
-  return { files, unread: { languages, large: 0 } };
+  return { files, configs, unread: { languages, large: 0 } };
 }
-function readTree(repoPath2) {
-  const { files, unread } = walkFiles(repoPath2);
+function readAll(repoPath2, paths2) {
   const sources2 = [];
   let large = 0;
-  for (const path2 of files) {
+  for (const path2 of paths2) {
     try {
       if (statSync(path2).size > MAX_BYTES) {
         large++;
@@ -616,15 +647,25 @@ function readTree(repoPath2) {
       continue;
     }
   }
-  return { sources: sources2, unread: { ...unread, large } };
+  return { sources: sources2, large };
+}
+function readTree(repoPath2) {
+  const { files, configs, unread } = walkFiles(repoPath2);
+  const code3 = readAll(repoPath2, files);
+  return {
+    sources: code3.sources,
+    configs: readAll(repoPath2, configs).sources,
+    unread: { ...unread, large: code3.large }
+  };
 }
 function readSources(repoPath2) {
   return readTree(repoPath2).sources;
 }
-var SKIPPED, TEST_FILE, LIMIT, MAX_BYTES;
+var SKIPPED, TEST_FILE, LIMIT, CONFIG_LIMIT, MAX_BYTES;
 var init_files = __esm({
   "packages/scan/dist/src/files.js"() {
     "use strict";
+    init_config_files();
     init_languages();
     SKIPPED = /* @__PURE__ */ new Set([
       "node_modules",
@@ -639,6 +680,7 @@ var init_files = __esm({
     ]);
     TEST_FILE = /(?:^|\/)(?:tests?|__tests__|e2e|spec|__mocks__)\/|\.(?:test|spec)\.|(?:^|\/)(?:test_[^/]*|[^/]*_test)\.\w+$/;
     LIMIT = 2e4;
+    CONFIG_LIMIT = 2e3;
     MAX_BYTES = 1024 * 1024;
   }
 });
@@ -1171,6 +1213,7 @@ var init_src3 = __esm({
     init_sdk();
     init_webhooks();
     init_files();
+    init_config_files();
     init_languages();
     init_manifests();
     init_sdk();
@@ -1186,6 +1229,7 @@ function directoryTree(root) {
   return {
     root,
     sources: () => files().sources,
+    configs: () => files().configs,
     unread: () => files().unread
   };
 }
@@ -1198,285 +1242,6 @@ var init_ports = __esm({
     bundledChanges = {
       versions: (provider) => loadVersions2(provider)
     };
-  }
-});
-
-// packages/core/dist/src/match/confidence.js
-function vendorNames(provider) {
-  const names3 = [
-    provider.name,
-    provider.apiHost,
-    ...provider.sdks.map((sdk) => sdk.package)
-  ].filter((name) => Boolean(name));
-  return new RegExp(names3.map(escapeRegExp).join("|"), "i");
-}
-function lowConfidence(provider) {
-  const mentions = vendorNames(provider);
-  return ({ file, text: text4 }) => TEST_FILE.test(file) || !mentions.test(text4);
-}
-function searchedLast(file) {
-  return TEST_FILE.test(file) || MIGRATION_FILE.test(file);
-}
-function byConfidence(matches) {
-  return {
-    high: matches.filter((m) => m.confidence !== "low"),
-    low: matches.filter((m) => m.confidence === "low")
-  };
-}
-function matchedInCode(event) {
-  return event.matches.some((m) => m.confidence !== "low");
-}
-var MIGRATION_FILE;
-var init_confidence = __esm({
-  "packages/core/dist/src/match/confidence.js"() {
-    "use strict";
-    init_src3();
-    MIGRATION_FILE = /(?:^|\/)(?:migrations?|migrate)\//;
-  }
-});
-
-// packages/core/dist/src/match/lifecycle.js
-function shifted(date, months2, days) {
-  const moved = /* @__PURE__ */ new Date(`${date.slice(0, 10)}T00:00:00Z`);
-  moved.setUTCMonth(moved.getUTCMonth() + months2);
-  moved.setUTCDate(moved.getUTCDate() + days);
-  return moved.toISOString().slice(0, 10);
-}
-function supportWindow(policy, release3) {
-  const months2 = policy.supportMonths ?? 0;
-  return {
-    unsupported: shifted(release3, months2, 0),
-    fallsForward: shifted(release3, months2, policy.accessDays ?? 0)
-  };
-}
-function oldestAccessible(policy, versions, after) {
-  const accessible = versions.find((entry) => entry.date <= after && supportWindow(policy, entry.date).fallsForward > after);
-  return accessible?.version ?? null;
-}
-function pinWarning(policy, versions, pin, today) {
-  if (!MONTH_NAMED.test(pin.value))
-    return null;
-  const release3 = versions.find((entry) => entry.version === pin.value)?.date ?? `${pin.value}-01`;
-  const { unsupported, fallsForward } = supportWindow(policy, release3);
-  const place2 = {
-    version: pin.value,
-    file: pin.file,
-    ...pin.line ? { line: pin.line } : {},
-    docs: policy.docs
-  };
-  if (fallsForward <= today) {
-    const to2 = oldestAccessible(policy, versions, today);
-    return { ...place2, kind: "retired", since: fallsForward, to: to2 };
-  }
-  if (unsupported > today)
-    return null;
-  const to = oldestAccessible(policy, versions, fallsForward);
-  return {
-    ...place2,
-    kind: "unsupported",
-    since: unsupported,
-    fallsForward,
-    to
-  };
-}
-function distinct(pins) {
-  const seen = /* @__PURE__ */ new Set();
-  return pins.filter((pin) => {
-    const key3 = `${pin.value}
-${pin.file}
-${pin.line ?? ""}`;
-    if (seen.has(key3))
-      return false;
-    seen.add(key3);
-    return true;
-  });
-}
-function versionWarnings(provider, surface, versions, today) {
-  const policy = provider.versioning;
-  if (!policy || !surface.sdk)
-    return [];
-  if (policy.unset && !surface.apiVersion)
-    return [{ kind: "unset", hint: policy.unset, docs: policy.docs }];
-  if (!policy.supportMonths)
-    return [];
-  const pins = surface.apiVersion ? [surface.apiVersion, ...surface.pins] : surface.pins;
-  return distinct(pins).map((pin) => pinWarning(policy, versions, pin, today)).filter((warning) => warning !== null);
-}
-var MONTH_NAMED;
-var init_lifecycle = __esm({
-  "packages/core/dist/src/match/lifecycle.js"() {
-    "use strict";
-    MONTH_NAMED = /^\d{4}-\d{2}$/;
-  }
-});
-
-// packages/core/dist/src/match/line-index.js
-function tokens2(literal) {
-  return (literal.match(TOKEN) ?? []).map((t) => t.toLowerCase());
-}
-function needed(patterns) {
-  return patterns.flatMap((pattern) => (needs.get(pattern) ?? []).flat());
-}
-function need(pattern, alternatives2) {
-  if (alternatives2.every((a) => a.length > 0))
-    needs.set(pattern, alternatives2);
-  return pattern;
-}
-function lineIndex(sources2, wanted2, limit = MAX_POSTINGS) {
-  const index3 = {
-    files: [],
-    source: [],
-    line: [],
-    text: [],
-    postings: new Map([...wanted2].map((t) => [t, []]))
-  };
-  let count = 0;
-  sources2.forEach(({ file, lines: lines3, skip }, s) => {
-    index3.files.push(file);
-    for (let i = 0; i < lines3.length; i++) {
-      const text4 = lines3[i].trim();
-      if (skip(text4, i))
-        continue;
-      const g = index3.text.length;
-      index3.source.push(s);
-      index3.line.push(i);
-      index3.text.push(text4);
-      if (!index3.postings)
-        continue;
-      for (const token of tokens2(text4)) {
-        const list4 = index3.postings.get(token);
-        if (!list4 || list4[list4.length - 1] === g)
-          continue;
-        list4.push(g);
-        if (++count > limit)
-          index3.postings = null;
-        if (!index3.postings)
-          break;
-      }
-    }
-  });
-  return index3;
-}
-function lines(index3, pattern) {
-  const alternatives2 = needs.get(pattern);
-  const postings = index3.postings;
-  if (!alternatives2 || !postings)
-    return null;
-  const found = [];
-  for (const alternative of alternatives2) {
-    let rarest = [];
-    let size = Infinity;
-    for (const token of alternative) {
-      const list4 = postings.get(token) ?? [];
-      if (list4.length < size)
-        [rarest, size] = [list4, list4.length];
-    }
-    for (const g of rarest)
-      found.push(g);
-  }
-  return found;
-}
-function candidates(index3, patterns) {
-  const found = [];
-  for (const pattern of patterns) {
-    const list4 = lines(index3, pattern);
-    if (!list4)
-      return null;
-    found.push(...list4);
-  }
-  found.sort((a, b) => a - b);
-  return found.filter((g, i) => i === 0 || found[i - 1] !== g);
-}
-var needs, TOKEN, MAX_POSTINGS;
-var init_line_index = __esm({
-  "packages/core/dist/src/match/line-index.js"() {
-    "use strict";
-    needs = /* @__PURE__ */ new WeakMap();
-    TOKEN = /\w+/g;
-    MAX_POSTINGS = 1 << 24;
-  }
-});
-
-// packages/core/dist/src/match/word-forms.js
-function capitalize(word3) {
-  return word3[0].toUpperCase() + word3.slice(1);
-}
-function wordsOf(name) {
-  return name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().split(/[-_]/).filter((word3) => word3.length > 0);
-}
-function pascal(words3) {
-  return words3.map(capitalize).join("");
-}
-function camel(words3) {
-  return words3[0] + pascal(words3.slice(1));
-}
-function singular(noun2) {
-  if (noun2.endsWith("ies"))
-    return `${noun2.slice(0, -3)}y`;
-  if (noun2.endsWith("s") && !noun2.endsWith("ss"))
-    return noun2.slice(0, -1);
-  return noun2;
-}
-function plural(noun2) {
-  if (noun2.endsWith("s"))
-    return noun2;
-  if (noun2.endsWith("y"))
-    return `${noun2.slice(0, -1)}ies`;
-  return `${noun2}s`;
-}
-var init_word_forms = __esm({
-  "packages/core/dist/src/match/word-forms.js"() {
-    "use strict";
-  }
-});
-
-// packages/core/dist/src/match/calls.js
-function isCall(symbol) {
-  return ROOT_CALL.test(symbol) || METHOD_CALL.test(symbol);
-}
-function alternatives(forms) {
-  return `(?:${forms.map(escapeRegExp).join("|")})`;
-}
-function namespace(name) {
-  const words3 = wordsOf(name);
-  const forms = [words3.join("_"), camel(words3), pascal(words3)];
-  return `\\$?\\w*${alternatives([...new Set(forms)])}\\w*`;
-}
-function resourceForms(name) {
-  const words3 = wordsOf(name);
-  const last2 = words3.length - 1;
-  const one = words3.map((word3, i) => i === last2 ? singular(word3) : word3);
-  const many = words3.map((word3, i) => i === last2 ? plural(word3) : word3);
-  return [.../* @__PURE__ */ new Set([pascal(one), camel(many), many.join("_")])];
-}
-function methodCall(owner, method) {
-  const resources = resourceForms(owner.at(-1) ?? "");
-  const namespaces = owner.slice(0, -1).map((name) => `${namespace(name)}${SEPARATOR}`);
-  const receiver = `${namespaces.join("")}${alternatives(resources)}`;
-  return need(new RegExp(`(?<![\\w$])${receiver}${SEPARATOR}${escapeRegExp(method)}\\s*\\(`), resources.map((form) => [...tokens2(form), ...tokens2(method)]));
-}
-function rootField(field3) {
-  const alias = "(?:\\w+\\s*:\\s*)?";
-  return need(new RegExp(`(?:^|\\{)\\s*${alias}${escapeRegExp(field3)}\\s*${GRAPHQL_ARGUMENT}`), [tokens2(field3)]);
-}
-function callPattern(call2) {
-  const path2 = call2.slice(0, -"()".length).split(".");
-  const name = path2.at(-1) ?? "";
-  const owner = path2.slice(0, -1);
-  return ROOT_CALL.test(call2) ? rootField(name) : methodCall(owner, name);
-}
-var GRAPHQL_ROOTS, ROOT_CALL, METHOD_CALL, SEPARATOR, GRAPHQL_ARGUMENT;
-var init_calls = __esm({
-  "packages/core/dist/src/match/calls.js"() {
-    "use strict";
-    init_src3();
-    init_line_index();
-    init_word_forms();
-    GRAPHQL_ROOTS = ["Query", "QueryRoot", "Mutation", "Subscription"];
-    ROOT_CALL = new RegExp(`^(?:${GRAPHQL_ROOTS.join("|")})\\.\\w+\\(\\)$`);
-    METHOD_CALL = /^\w+(?:\.[\w-]+){2,}\(\)$/;
-    SEPARATOR = "\\s*(?:\\.|->|::|\\\\)\\s*";
-    GRAPHQL_ARGUMENT = "\\(\\s*\\$?\\w+\\s*:";
   }
 });
 
@@ -2346,19 +2111,19 @@ var init_throttle = __esm({
 function changesBehavior(event) {
   return event.breaking && !REMOVES_A_NAME.has(event.type);
 }
-function singular2(word3) {
+function singular(word3) {
   if (word3.endsWith("ies"))
     return `${word3.slice(0, -3)}y`;
   if (word3.endsWith("s") && !word3.endsWith("ss"))
     return word3.slice(0, -1);
   return word3;
 }
-function wordsOf2(text4) {
+function wordsOf(text4) {
   const words3 = text4.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().match(/[a-z0-9]+/g);
-  return ` ${(words3 ?? []).map(singular2).join(" ")} `;
+  return ` ${(words3 ?? []).map(singular).join(" ")} `;
 }
 function inTitle(title, field3) {
-  return wordsOf2(title).includes(wordsOf2(field3));
+  return wordsOf(title).includes(wordsOf(field3));
 }
 function queryRootCalls(schemas) {
   const calls3 = /* @__PURE__ */ new Map();
@@ -2391,7 +2156,7 @@ function withQueryRootCalls(entries, calls3) {
   });
 }
 var REFERENCE, REMOVES_A_NAME;
-var init_calls2 = __esm({
+var init_calls = __esm({
   "packages/providers/dist/src/shopify/calls.js"() {
     "use strict";
     REFERENCE = /^([a-z][A-Za-z0-9]*)(\(\w+:.*\))?$/;
@@ -8697,7 +8462,7 @@ var init_collect3 = __esm({
     "use strict";
     init_collection();
     init_throttle();
-    init_calls2();
+    init_calls();
     init_events();
     init_feed();
     init_release_notes();
@@ -8907,7 +8672,7 @@ function defaultCalls(title, page, type, breaking) {
   return [...new Set(calls3.filter((call2) => call2 !== null))];
 }
 var DEFAULT, OMITTED, RESOURCE, CREATE, CLIENT;
-var init_calls3 = __esm({
+var init_calls2 = __esm({
   "packages/providers/dist/src/stripe/calls.js"() {
     "use strict";
     DEFAULT = /\bdefault\b/i;
@@ -9109,7 +8874,7 @@ var API_KEY;
 var init_events2 = __esm({
   "packages/providers/dist/src/stripe/events.js"() {
     "use strict";
-    init_calls3();
+    init_calls2();
     init_replaced();
     init_symbols();
     API_KEY = /\b([spr]k)_(test|live)_[A-Za-z0-9]+/g;
@@ -9272,10 +9037,10 @@ var init_draft = __esm({
 
 // packages/providers/dist/src/openapi/words.js
 function sharesMeaningfulWord(a, b) {
-  const words3 = new Set(wordsOf3(a));
-  return wordsOf3(b).some((word3) => words3.has(word3) && !GENERIC_WORDS.has(word3));
+  const words3 = new Set(wordsOf2(a));
+  return wordsOf2(b).some((word3) => words3.has(word3) && !GENERIC_WORDS.has(word3));
 }
-var GENERIC_WORDS, wordsOf3;
+var GENERIC_WORDS, wordsOf2;
 var init_words = __esm({
   "packages/providers/dist/src/openapi/words.js"() {
     "use strict";
@@ -9298,7 +9063,7 @@ var init_words = __esm({
       "on",
       "enabled"
     ]);
-    wordsOf3 = (name) => name.split(/[_-]|(?<=[a-z0-9])(?=[A-Z])/).filter(Boolean).map((word3) => word3.toLowerCase());
+    wordsOf2 = (name) => name.split(/[_-]|(?<=[a-z0-9])(?=[A-Z])/).filter(Boolean).map((word3) => word3.toLowerCase());
   }
 });
 
@@ -9831,15 +9596,15 @@ function sameSchema(a, b) {
   return a.owner === b.owner && parentOf(a) === parentOf(b) && a.signature === b.signature && a.required === b.required;
 }
 function sharedEnding(a, b) {
-  const x = wordsOf3(a.name).reverse();
-  const y = wordsOf3(b.name).reverse();
+  const x = wordsOf2(a.name).reverse();
+  const y = wordsOf2(b.name).reverse();
   let count = 0;
   while (count < x.length && count < y.length && x[count] === y[count])
     count++;
   return count;
 }
 function leadingWords(field3, ending) {
-  const words3 = wordsOf3(field3.name);
+  const words3 = wordsOf2(field3.name);
   return words3.slice(0, words3.length - ending);
 }
 function swapOf(from, to) {
@@ -10067,609 +9832,123 @@ var init_src4 = __esm({
   }
 });
 
-// packages/core/dist/src/render/coverage.js
-function noun(count, word3) {
-  return count === 1 ? word3 : `${word3}s`;
+// packages/core/dist/src/match/line-index.js
+function tokens2(literal) {
+  return (literal.match(TOKEN) ?? []).map((t) => t.toLowerCase());
 }
-function plural2(count, word3) {
-  return `${count} ${noun(count, word3)}`;
+function needed(patterns) {
+  return patterns.flatMap((pattern) => (needs.get(pattern) ?? []).flat());
 }
-function nameOf(language) {
-  return LANGUAGE_NAMES[language] ?? language;
+function need(pattern, alternatives2) {
+  if (alternatives2.every((a) => a.length > 0))
+    needs.set(pattern, alternatives2);
+  return pattern;
 }
-function mostFirst(counts4) {
-  return Object.entries(counts4).sort(([a, x], [b, y]) => y - x || a.localeCompare(b));
-}
-function checked(coverage2, findings2) {
-  const languages = mostFirst(coverage2.files);
-  const total = languages.reduce((sum, [, count]) => sum + count, 0);
-  const names3 = languages.length ? ` (${languages.map(([language]) => nameOf(language)).join(", ")})` : "";
-  const clean = findings2 === 0 && total > 0 && coverage2.providers > 0;
-  return clean ? `No findings in ${plural2(total, "checked file")}${names3}` : `Checked ${plural2(total, "file")}${names3}`;
-}
-function notCovered({ notCovered: notCovered2 }) {
-  const parts = mostFirst(notCovered2.files).map(([language, count]) => `${count} ${nameOf(language)} ${noun(count, "file")}`);
-  if (notCovered2.large > 0)
-    parts.push(`${plural2(notCovered2.large, "file")} over 1 MB`);
-  if (notCovered2.manifests > 0)
-    parts.push(`${plural2(notCovered2.manifests, "manifest")} not parsed`);
-  if (notCovered2.providers > 0)
-    parts.push(`${plural2(notCovered2.providers, "provider")} without change data`);
-  return parts;
-}
-function coverageLine(coverage2, findings2) {
-  const parts = [
-    checked(coverage2, findings2),
-    `${plural2(coverage2.providers, "provider")} tracked`
-  ];
-  const missing = notCovered(coverage2);
-  if (missing.length > 0)
-    parts.push(`not covered: ${missing.join(", ")}`);
-  return parts.join(" \xB7 ");
-}
-function findingCount(results) {
-  return results.reduce((sum, r) => sum + r.events.filter(matchedInCode).length + (r.prePin?.length ?? 0), 0);
-}
-var LANGUAGE_NAMES;
-var init_coverage = __esm({
-  "packages/core/dist/src/render/coverage.js"() {
-    "use strict";
-    init_confidence();
-    LANGUAGE_NAMES = {
-      javascript: "JavaScript",
-      typescript: "TypeScript",
-      python: "Python",
-      ruby: "Ruby",
-      php: "PHP",
-      java: "Java",
-      graphql: "GraphQL",
-      go: "Go",
-      csharp: "C#"
-    };
-  }
-});
-
-// packages/core/dist/src/render/lifecycle.js
-function versionWarningText(warning, where2) {
-  if (warning.kind === "unset")
-    return `no changes are listed without an API version. ${warning.hint}; run inspect with --api-version <version> to list the changes after that version (${warning.docs})`;
-  const place2 = warning.file ? ` (${where2(warning.file, warning.line)})` : "";
-  const pinned = `API version ${warning.version}${place2}`;
-  const to = warning.to ?? "the oldest accessible version";
-  if (warning.kind === "retired")
-    return `${pinned} is retired: requests fall forward to ${to} since ${warning.since} (${warning.docs})`;
-  return `${pinned} is unsupported since ${warning.since}: requests fall forward to ${to} from ${warning.fallsForward} (${warning.docs})`;
-}
-var init_lifecycle2 = __esm({
-  "packages/core/dist/src/render/lifecycle.js"() {
-    "use strict";
-  }
-});
-
-// packages/core/dist/src/render/text.js
-function versionLine(result, where2) {
-  const pin = result.surface.apiVersion;
-  const provider = providers[result.provider];
-  const sdk = result.surface.sdk;
-  if (!pin) {
-    const hint4 = provider.unpinned[sdk?.language ?? "javascript"];
-    const value2 = provider.versionless ? "none" : provider.versioning?.unset ? "not set in code" : "unknown";
-    return `API version: ${value2} (${hint4})`;
-  }
-  if (pin.source === "override")
-    return `API version: ${pin.value} (override)`;
-  if (pin.source === "pinned") {
-    return `API version: ${pin.value} (pinned, ${where2(pin.file, pin.line)})`;
-  }
-  const rule = provider.sdks.find((s) => s.package === sdk?.package);
-  const byMinor = Object.keys(rule?.defaultApiVersion ?? {}).some((k) => k.includes("."));
-  const from = byMinor ? `SDK ${sdk?.version}` : `SDK major ${sdk?.version?.split(".")[0] ?? "?"}`;
-  return `API version: ${pin.value} (inferred from ${from}, ${where2(pin.file)})`;
-}
-function samePin(pin, other) {
-  return !!other && pin.value === other.value && pin.file === other.file && pin.line === other.line;
-}
-function latestText(result) {
-  const latest = result.latest ?? "unknown";
-  const candidate = result.releaseCandidate;
-  return candidate ? `${latest} stable, ${candidate} release candidate` : latest;
-}
-function dataStart(result) {
-  const start = providers[result.provider].dataStart;
-  const value2 = result.surface.apiVersion?.value;
-  return start && value2 && value2 < start ? ` (data starts ${start})` : "";
-}
-function eventFlag(event, today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10)) {
-  if (event.retires && event.retiresNotBefore)
-    return `retires not before ${event.retires}`;
-  if (event.retires)
-    return event.retires <= today ? "retired" : `retires ${event.retires}`;
-  return event.breaking ? "breaking" : event.jev && JEV_FLAGS[event.jev];
-}
-function prePinFlag(event, pin) {
-  return `removed in ${event.version}, at or before your pin ${pin}, still referenced`;
-}
-function lowCount(count) {
-  return `${count} low-confidence ${count === 1 ? "match" : "matches"}`;
-}
-function lowConfidenceLine(event, count) {
-  const title = providers[event.provider]?.title ?? event.provider;
-  return `+${lowCount(count)} in tests or files without a ${title} reference`;
-}
-function eventBlock(event, flag = eventFlag(event)) {
-  const lines3 = [
-    `  ${event.version}  ${event.title}${flag ? `  [${flag}]` : ""}`,
-    `    ${event.changelog}`
-  ];
-  if (event.symbols.length > 0) {
-    lines3.push(`    symbols: ${event.symbols.join(", ")}`);
-  }
-  const { high, low } = byConfidence(event.matches);
-  for (const m of high) {
-    lines3.push(`    ${m.repo ? `${m.repo}:` : ""}${m.file}:${m.line}  ${m.text}`);
-  }
-  if (low.length > 0)
-    lines3.push(`    ${lowConfidenceLine(event, low.length)}`);
-  return lines3;
-}
-function listed(events2) {
-  return events2.filter((e) => e.breaking || e.matches.length > 0);
-}
-function counts(events2, total) {
-  const breaking = events2.filter((e) => e.breaking).length;
-  const matched = events2.filter(matchedInCode).length;
-  const both = events2.filter((e) => e.breaking && matchedInCode(e)).length;
-  const lines3 = [`${total}, ${breaking} breaking, ${matched} matched in code`];
-  if (both > 0)
-    lines3.push(`Breaking with matches: ${both}`);
-  return lines3;
-}
-function summary(events2, total) {
-  const lines3 = counts(events2, total);
-  const shown2 = listed(events2);
-  if (shown2.length > 0)
-    lines3.push("");
-  for (const event of shown2)
-    lines3.push(...eventBlock(event));
-  return lines3;
-}
-function facts(result, where2 = plain2) {
-  const { surface, provider } = result;
-  const sdk = surface.sdk;
-  if (!sdk)
-    return [];
-  const version2 = sdk.version ?? "unknown";
-  const shown2 = where2 === plain2 ? version2 : code2(version2);
-  const lines3 = [
-    `${providers[provider].title} SDK: ${sdk.package} ${shown2} (${sdk.language}, ${where2(sdk.file)})`,
-    versionLine(result, where2) + dataStart(result)
-  ];
-  const webhooks = surface.pins.find((p) => p.role === "webhooks");
-  if (webhooks)
-    lines3.push(`Webhooks API version: ${webhooks.value} (${where2(webhooks.file, webhooks.line)})`);
-  const others = surface.pins.filter((p) => !p.role && !samePin(p, surface.apiVersion));
-  if (others.length > 0) {
-    lines3.push(`Other pins: ${others.map((p) => `${p.value} (${where2(p.file, p.line)})`).join(", ")}`);
-  }
-  const latest = providers[provider].versionless ? "Latest notice" : "Latest";
-  lines3.push(`${latest}: ${latestText(result)}`);
-  for (const warning of result.warnings ?? [])
-    lines3.push(`Warning: ${warning}`);
-  for (const warning of result.versionWarnings ?? [])
-    lines3.push(`Warning: ${versionWarningText(warning, where2)}`);
-  return lines3;
-}
-function prePinLines(result) {
-  const events2 = result.prePin ?? [];
-  const pin = result.surface.apiVersion?.value;
-  if (events2.length === 0 || !pin)
-    return [];
-  return [
-    "",
-    `Removed at or before your pin ${pin}, still referenced in code: ${events2.length}`,
-    "",
-    ...events2.flatMap((e) => eventBlock(e, prePinFlag(e, pin)))
-  ];
-}
-function totalLine(result) {
-  const base = result.surface.apiVersion?.value;
-  const count = `${result.events.length} events`;
-  if (providers[result.provider].versionless)
-    return `Retirements matching this code: ${count}`;
-  return base ? `Changes after ${base}: ${count}` : null;
-}
-function renderText(result) {
-  if (!result.surface.sdk) {
-    return `${result.provider}: not detected in ${result.path}`;
-  }
-  const lines3 = facts(result);
-  const total = totalLine(result);
-  if (total)
-    lines3.push(...summary(result.events, total), ...prePinLines(result));
-  return lines3.join("\n");
-}
-var plain2, JEV_FLAGS, PRE_PIN_HEADING;
-var init_text = __esm({
-  "packages/core/dist/src/render/text.js"() {
-    "use strict";
-    init_src4();
-    init_confidence();
-    init_issue();
-    init_lifecycle2();
-    plain2 = (file, line3) => line3 ? `${file}:${line3}` : file;
-    JEV_FLAGS = {
-      breaking: "likely breaking",
-      check: "review"
-    };
-    PRE_PIN_HEADING = "Removed at or before your pin, still referenced in code";
-  }
-});
-
-// packages/core/dist/src/render/event-markdown.js
-function heading(event) {
-  const flag = eventFlag(event);
-  const title = label3(event.title);
-  const linked = SAFE_URL.test(event.changelog) ? `[${title}](${event.changelog})` : title;
-  return `- **${event.version}** ${linked}${flag ? ` \u2014 ${flag}` : ""}`;
-}
-function prePinHeading(event) {
-  const title = label3(event.title);
-  const linked = SAFE_URL.test(event.changelog) ? `[${title}](${event.changelog})` : title;
-  return `- **${event.version}** ${linked} \u2014 ${prePinFlag(event, event.prePin ?? "")}`;
-}
-function eventMarkdown(event, where2, head = heading) {
-  const lines3 = [head(event)];
-  if (event.symbols.length > 0) {
-    lines3.push(`  - symbols: ${event.symbols.map(code2).join(", ")}`);
-  }
-  const place2 = (m) => {
-    const repo = m.repo ? `${code2(m.repo)} ` : "";
-    return `- ${repo}${where2(m.file, m.line, m.repo)} ${code2(m.text)}`;
+function lineIndex(sources2, wanted2, limit = MAX_POSTINGS) {
+  const index3 = {
+    files: [],
+    source: [],
+    line: [],
+    text: [],
+    postings: new Map([...wanted2].map((t) => [t, []]))
   };
-  const { high, low } = byConfidence(event.matches);
-  lines3.push(...high.map((m) => `  ${place2(m)}`));
-  if (low.length > 0)
-    lines3.push(`  - <details><summary>${lowConfidenceLine(event, low.length)}</summary>`, "", ...low.map((m) => `    ${place2(m)}`), "", "    </details>");
-  return lines3;
-}
-var init_event_markdown = __esm({
-  "packages/core/dist/src/render/event-markdown.js"() {
-    "use strict";
-    init_confidence();
-    init_issue();
-    init_text();
-  }
-});
-
-// packages/core/dist/src/render/issue.js
-function code2(text4) {
-  const runs2 = text4.match(/`+/g) ?? [];
-  const longest = Math.max(0, ...runs2.map((run2) => run2.length));
-  const fence2 = "`".repeat(longest + 1);
-  const line3 = text4.replace(/[\r\n]+/g, " ");
-  if (!line3)
-    return "` `";
-  return longest ? `${fence2} ${line3} ${fence2}` : `${fence2}${line3}${fence2}`;
-}
-function inert(text4) {
-  return text4.replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/#(?=\d)/g, "#\u200B").replace(/:(?=\/\/)/g, "\\:").replace(/(www)\./gi, "$1\\.").replace(/`/g, "\\`");
-}
-function outsideCode(text4, escape) {
-  let out = "";
-  let from = 0;
-  const runs2 = /`+/g;
-  for (let run2 = runs2.exec(text4); run2; run2 = runs2.exec(text4)) {
-    const word3 = text4.slice(0, run2.index).split(/\s/).pop() ?? "";
-    if (AUTOLINK.test(word3))
-      continue;
-    const close = new RegExp(`(?<!\`)${run2[0]}(?!\`)`, "g");
-    close.lastIndex = run2.index + run2[0].length;
-    const end = close.exec(text4);
-    if (!end)
-      continue;
-    out += escape(text4.slice(from, run2.index));
-    from = end.index + end[0].length;
-    out += text4.slice(run2.index, from);
-    runs2.lastIndex = from;
-  }
-  return out + escape(text4.slice(from));
-}
-function label3(text4) {
-  return outsideCode(text4.replace(/[\r\n]+/g, " ").replace(/[[\]\\]/g, "\\$&").replace(/@/g, "@\u200B"), inert);
-}
-function linker(commit) {
-  if (!commit)
-    return (file, line3) => code2(line3 ? `${file}:${line3}` : file);
-  return (file, line3) => {
-    const path2 = encodeURI(`${commit.prefix}${file}`).replace(/\(/g, "%28").replace(/\)/g, "%29");
-    const anchor2 = line3 ? `#L${line3}` : "";
-    const text4 = label3(line3 ? `${file}:${line3}` : file);
-    return `[${text4}](${commit.url}/blob/${commit.sha}/${path2}${anchor2})`;
-  };
-}
-function section3(result, where2, budget) {
-  const title = providers[result.provider].title;
-  const lines3 = [
-    `## ${title}`,
-    "",
-    ...facts(result, where2).map((l) => `- ${l}`)
-  ];
-  const total = totalLine(result);
-  if (!total)
-    return lines3;
-  lines3.push(...counts(result.events, total).map((l) => `- ${l}`));
-  const shown2 = listed(result.events);
-  if (shown2.length > 0)
-    lines3.push("", `### ${title} changes to review`, "");
-  let size = lines3.join("\n").length;
-  const pin = result.surface.apiVersion?.value;
-  const drift = pin ? result.prePin ?? [] : [];
-  const entries = [
-    ...shown2.map((event) => ({ event, head: heading })),
-    ...drift.map((event) => ({
-      event: { ...event, prePin: pin },
-      head: prePinHeading
-    }))
-  ];
-  let inDrift = false;
-  for (const [i, { event, head }] of entries.entries()) {
-    const block3 = eventMarkdown(event, where2, head);
-    size += block3.join("\n").length + 1;
-    if (size > budget) {
-      lines3.push(`- ${entries.length - i} more listed events: run \`upseam inspect ${result.provider}\` for the full list`);
-      break;
+  let count = 0;
+  sources2.forEach(({ file, lines: lines3, skip }, s) => {
+    index3.files.push(file);
+    for (let i = 0; i < lines3.length; i++) {
+      const text4 = lines3[i].trim();
+      if (skip(text4, i))
+        continue;
+      const g = index3.text.length;
+      index3.source.push(s);
+      index3.line.push(i);
+      index3.text.push(text4);
+      if (!index3.postings)
+        continue;
+      for (const token of tokens2(text4)) {
+        const list4 = index3.postings.get(token);
+        if (!list4 || list4[list4.length - 1] === g)
+          continue;
+        list4.push(g);
+        if (++count > limit)
+          index3.postings = null;
+        if (!index3.postings)
+          break;
+      }
     }
-    if (head === prePinHeading && !inDrift) {
-      inDrift = true;
-      lines3.push("", `### ${title}: ${PRE_PIN_HEADING}`, "");
+  });
+  return index3;
+}
+function lines(index3, pattern) {
+  const alternatives2 = needs.get(pattern);
+  const postings = index3.postings;
+  if (!alternatives2 || !postings)
+    return null;
+  const found = [];
+  for (const alternative of alternatives2) {
+    let rarest = [];
+    let size = Infinity;
+    for (const token of alternative) {
+      const list4 = postings.get(token) ?? [];
+      if (list4.length < size)
+        [rarest, size] = [list4, list4.length];
     }
-    lines3.push(...block3);
+    for (const g of rarest)
+      found.push(g);
   }
-  return lines3;
+  return found;
 }
-function hints(results) {
-  const groups = /* @__PURE__ */ new Map();
-  for (const result of results) {
-    const provider = providers[result.provider];
-    const hint4 = provider.configure ?? PIN;
-    groups.set(hint4, [...groups.get(hint4) ?? [], provider.title]);
+function candidates(index3, patterns) {
+  const found = [];
+  for (const pattern of patterns) {
+    const list4 = lines(index3, pattern);
+    if (!list4)
+      return null;
+    found.push(...list4);
   }
-  if (groups.size <= 1)
-    return [[...groups.keys()][0] ?? PIN];
-  return [...groups].map(([hint4, titles]) => `${titles.join(", ")}: ${hint4}`);
+  found.sort((a, b) => a - b);
+  return found.filter((g, i) => i === 0 || found[i - 1] !== g);
 }
-function renderIssue(results, commit, coverage2) {
-  const where2 = linker(commit);
-  const at2 = commit ? ` at the [scanned commit](${commit.url}/commit/${commit.sha})` : "";
-  const linked = commit ? "; lines are linked at the scanned commit" : "";
-  const loose = results.filter((r) => providers[r.provider].versionless);
-  const retirements2 = "the model, endpoint and beta header retirements that match your code, with shutdown dates and replacements";
-  const intro = results.length === 0 ? `Upseam checked this repository${at2} and detected no supported API SDK.` : loose.length === results.length ? `Upseam checked this repository${at2}: the API SDKs it uses and ${retirements2}${linked}.` : `Upseam checked this repository${at2}: the API SDKs it uses, the API version they are pinned to and the changes published after that version${loose.length > 0 ? `, and, for APIs without versions, ${retirements2}` : ""}. Breaking changes and changes that match your code are listed${linked}.`;
-  const lines3 = [MARKER, intro, ""];
-  const budget = MAX_BODY / Math.max(results.length, 1);
-  for (const result of results) {
-    lines3.push(...section3(result, where2, budget), "");
-  }
-  lines3.push("## How to configure", "", "- Upseam runs from the workflow that calls the Upseam action; its `schedule` sets how often this issue is refreshed.", ...hints(results).map((hint4) => `- ${hint4}`), "- This issue is updated in place and never reopened. To stop, remove the workflow.", "", FEEDBACK);
-  if (coverage2)
-    lines3.push("", TRAILER, "", `Coverage of this scan: ${coverageLine(coverage2, findingCount(results))}`);
-  return lines3.join("\n");
-}
-var MARKER, TITLE, TRAILER, FEEDBACK_URL, FEEDBACK, MAX_BODY, PIN, AUTOLINK, SAFE_URL;
-var init_issue = __esm({
-  "packages/core/dist/src/render/issue.js"() {
+var needs, TOKEN, MAX_POSTINGS;
+var init_line_index = __esm({
+  "packages/core/dist/src/match/line-index.js"() {
     "use strict";
-    init_src4();
-    init_coverage();
-    init_event_markdown();
-    init_text();
-    MARKER = "<!-- upseam:report -->";
-    TITLE = "Upseam watches this repository";
-    TRAILER = "<!-- upseam:scan -->";
-    FEEDBACK_URL = "https://github.com/upseam/upseam/issues/new/choose";
-    FEEDBACK = `Something wrong or missing? [Tell us](${FEEDBACK_URL}).`;
-    MAX_BODY = 6e4;
-    PIN = "Pin the API version in the API client configuration so the base version is exact, not inferred.";
-    AUTOLINK = /:\/\/|www\./i;
-    SAFE_URL = /^https?:\/\/[^\s()<>]+$/;
+    needs = /* @__PURE__ */ new WeakMap();
+    TOKEN = /\w+/g;
+    MAX_POSTINGS = 1 << 24;
   }
 });
 
-// packages/core/dist/src/render/group.js
-function vendor(provider) {
-  return providers[provider]?.title ?? provider;
+// packages/core/dist/src/match/word-forms.js
+function capitalize(word3) {
+  return word3[0].toUpperCase() + word3.slice(1);
 }
-function link(event) {
-  return SAFE_URL.test(event.changelog) ? `[${label3(event.title)}](${event.changelog})` : code2(event.title);
+function wordsOf3(name) {
+  return name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().split(/[-_]/).filter((word3) => word3.length > 0);
 }
-var plural3;
-var init_group = __esm({
-  "packages/core/dist/src/render/group.js"() {
+function pascal(words3) {
+  return words3.map(capitalize).join("");
+}
+function camel(words3) {
+  return words3[0] + pascal(words3.slice(1));
+}
+function singular2(noun2) {
+  if (noun2.endsWith("ies"))
+    return `${noun2.slice(0, -3)}y`;
+  if (noun2.endsWith("s") && !noun2.endsWith("ss"))
+    return noun2.slice(0, -1);
+  return noun2;
+}
+function plural(noun2) {
+  if (noun2.endsWith("s"))
+    return noun2;
+  if (noun2.endsWith("y"))
+    return `${noun2.slice(0, -1)}ies`;
+  return `${noun2}s`;
+}
+var init_word_forms = __esm({
+  "packages/core/dist/src/match/word-forms.js"() {
     "use strict";
-    init_src4();
-    init_confidence();
-    init_issue();
-    init_text();
-    plural3 = (n, word3) => `${n} ${word3}${n === 1 ? "" : "s"}`;
-  }
-});
-
-// packages/core/dist/src/patch/capability.js
-function replacements(event) {
-  const names3 = (event.replacement ?? "").split(",").map((s) => s.trim());
-  return [...new Set(names3.filter(Boolean))];
-}
-function severalReplacements(title, event) {
-  const names3 = replacements(event);
-  return `${title} names ${names3.length} replacements (${names3.join(", ")}); choose one by hand.`;
-}
-function successorGroup(group3) {
-  const events2 = all(group3);
-  return events2.length > 0 && events2.every((e) => e.retires && replacements(e).length > 0);
-}
-function withCapabilities(groups, enabled) {
-  return groups.map((group3) => {
-    if (!successorGroup(group3))
-      return group3;
-    if (enabled)
-      return { ...group3, kind: "capability" };
-    return {
-      ...group3,
-      kind: "fix",
-      events: [],
-      needsHuman: [
-        ...group3.events.map((event) => ({ event, reason: CAPABILITIES_OFF })),
-        ...group3.needsHuman
-      ]
-    };
-  });
-}
-var CAPABILITIES_OFF, all;
-var init_capability = __esm({
-  "packages/core/dist/src/patch/capability.js"() {
-    "use strict";
-    init_src2();
-    init_group();
-    init_issue();
-    CAPABILITIES_OFF = "New capabilities are off for this repository, so moving to the successor model needs you.";
-    all = (group3) => [
-      ...group3.events,
-      ...group3.needsHuman.map((n) => n.event)
-    ];
-  }
-});
-
-// packages/core/dist/src/match/target.js
-function sdkReach(subscription, sdkVersion, catalog = providers) {
-  const provider = catalog[subscription.provider];
-  if (!provider || provider.versionless || !sdkVersion)
-    return null;
-  const rule = provider.sdks.find((s) => s.package === subscription.sdk.package && s.language === subscription.sdk.language);
-  return rule ? defaultFor(rule, sdkVersion) : null;
-}
-function targetVersion(subscription, sdkVersion, catalog = providers) {
-  const reach = sdkReach(subscription, sdkVersion, catalog);
-  if (!reach)
-    return null;
-  const from = subscription.apiVersion;
-  return from && compareVersions(from, reach) > 0 ? from : reach;
-}
-var init_target = __esm({
-  "packages/core/dist/src/match/target.js"() {
-    "use strict";
-    init_src2();
-    init_src4();
-    init_src3();
-  }
-});
-
-// packages/core/dist/src/match/groups.js
-function fixable(group3) {
-  return group3.events.length > 0;
-}
-function notMechanical(event) {
-  return MECHANICAL.includes(event.type) ? null : `A ${event.type.replace("_", " ")} is not a mechanical change.`;
-}
-function usedSymbol(event) {
-  const { high } = byConfidence(event.matches);
-  return event.symbols.find((s) => high.some((m) => m.text.includes(s))) ?? null;
-}
-function singleReplacement(events2) {
-  const named3 = [...new Set(events2.map((e) => e.replacement))];
-  const to = named3.length === 1 ? named3[0] : void 0;
-  return to && replacements({ replacement: to }).length === 1 ? to : void 0;
-}
-function matchedBreaking(result) {
-  return result.events.filter((e) => e.breaking && matchedInCode(e));
-}
-function group2(base, events2, blocker) {
-  const reasons = events2.map(blocker);
-  const blocked = reasons.some((r) => r !== null);
-  return {
-    ...base,
-    key: `${base.provider}/${base.to}`,
-    kind: "fix",
-    events: blocked ? [] : events2,
-    needsHuman: blocked ? events2.map((event, i) => ({ event, reason: reasons[i] ?? HELD })) : []
-  };
-}
-function newest(events2) {
-  return events2.map((e) => e.version).sort(compareVersions).at(-1);
-}
-function versioned(result, repo, catalog) {
-  const sdk = result.surface.sdk;
-  const from = result.surface.apiVersion?.value ?? null;
-  const subscription = {
-    provider: result.provider,
-    sdk: { package: sdk.package, language: sdk.language },
-    apiVersion: from
-  };
-  const target3 = targetVersion(subscription, sdk.version, catalog);
-  const reach = sdkReach(subscription, sdk.version, catalog);
-  const base = { repo, provider: result.provider, from };
-  const matched = matchedBreaking(result);
-  const reachable = (e) => target3 !== null && compareVersions(e.version, target3) <= 0;
-  const within2 = matched.filter(reachable);
-  const beyond = matched.filter((e) => !reachable(e));
-  const found = `${sdk.package} ${sdk.version ?? "unknown"}`;
-  const older = reach !== target3 ? `, older than the pinned ${from}` : "";
-  const bump = reach ? (e) => `Bump SDK: ${found} supports API versions up to ${reach}${older}; this change is in ${e.version}.` : () => `No API version is known for ${found}; choose the target by hand.`;
-  const groups = [];
-  if (within2.length > 0)
-    groups.push(group2({ ...base, to: target3 }, within2, notMechanical));
-  if (beyond.length > 0)
-    groups.push(group2({ ...base, to: newest(beyond) }, beyond, bump));
-  return groups;
-}
-function prePinGroups(result, repo) {
-  const pin = result.surface.apiVersion?.value;
-  const found = (result.prePin ?? []).filter(matchedInCode);
-  if (!pin || found.length === 0)
-    return [];
-  const base = { repo, provider: result.provider, from: null };
-  return [...new Set(found.map((e) => e.version))].sort(compareVersions).map((version2) => group2({ ...base, to: version2 }, found.filter((e) => e.version === version2).map((e) => ({ ...e, prePin: pin })), notMechanical));
-}
-function retirements(result, repo, catalog) {
-  const title = catalog[result.provider]?.title ?? result.provider;
-  const events2 = matchedBreaking(result);
-  const versions = [...new Set(events2.map((e) => e.version))].sort(compareVersions);
-  const blocker = (e) => {
-    const names3 = replacements(e).length;
-    if (names3 > 1)
-      return severalReplacements(title, e);
-    return notMechanical(e) ?? (names3 === 1 ? null : `${title} names no replacement, so moving off it needs you.`);
-  };
-  return versions.map((version2) => {
-    const own = events2.filter((e) => e.version === version2);
-    const built = group2({
-      repo,
-      provider: result.provider,
-      from: own.length === 1 ? usedSymbol(own[0]) : null,
-      to: version2
-    }, own, blocker);
-    const to = singleReplacement(own);
-    return to ? { ...built, to } : built;
-  });
-}
-function groupChanges(inspections, repo, capabilities = true, catalog = providers) {
-  const groups = inspections.filter((r) => r.surface.sdk).flatMap((r) => catalog[r.provider]?.versionless ? retirements(r, repo, catalog) : [...versioned(r, repo, catalog), ...prePinGroups(r, repo)]);
-  return withCapabilities(groups, capabilities);
-}
-var MECHANICAL, HELD;
-var init_groups = __esm({
-  "packages/core/dist/src/match/groups.js"() {
-    "use strict";
-    init_src2();
-    init_src4();
-    init_capability();
-    init_confidence();
-    init_target();
-    MECHANICAL = [
-      "removal",
-      "rename",
-      "type_change"
-    ];
-    HELD = "Held back: another change in this group needs you, so Upseam did not patch it.";
   }
 });
 
@@ -10684,7 +9963,7 @@ function abbreviations(words3) {
   return prefixes;
 }
 function receiverPattern(object2) {
-  const words3 = wordsOf(object2);
+  const words3 = wordsOf3(object2);
   const snake = words3.join("_");
   const snakeForm = `(?:[a-z][a-z0-9]*_)*${snake}${SNAKE_WRAPPER}`;
   const camelForm = `(?:[a-z][a-z0-9]*(?:[A-Z][a-z0-9]*)*${pascal(words3)}|${camel(words3)})${CAMEL_WRAPPER}`;
@@ -10720,6 +9999,90 @@ var init_access_forms = __esm({
     WRAPPERS = ["obj", "object", "data", "dict", "json", "raw", "payload"];
     SNAKE_WRAPPER = `(?:_(?:${WRAPPERS.join("|")}))?`;
     CAMEL_WRAPPER = `(?:${WRAPPERS.map(capitalize).join("|")})?`;
+  }
+});
+
+// packages/core/dist/src/match/calls.js
+function isCall(symbol) {
+  return ROOT_CALL.test(symbol) || METHOD_CALL.test(symbol);
+}
+function alternatives(forms) {
+  return `(?:${forms.map(escapeRegExp).join("|")})`;
+}
+function namespace(name) {
+  const words3 = wordsOf3(name);
+  const forms = [words3.join("_"), camel(words3), pascal(words3)];
+  return `\\$?\\w*${alternatives([...new Set(forms)])}\\w*`;
+}
+function resourceForms(name) {
+  const words3 = wordsOf3(name);
+  const last2 = words3.length - 1;
+  const one = words3.map((word3, i) => i === last2 ? singular2(word3) : word3);
+  const many = words3.map((word3, i) => i === last2 ? plural(word3) : word3);
+  return [.../* @__PURE__ */ new Set([pascal(one), camel(many), many.join("_")])];
+}
+function methodCall(owner, method) {
+  const resources = resourceForms(owner.at(-1) ?? "");
+  const namespaces = owner.slice(0, -1).map((name) => `${namespace(name)}${SEPARATOR}`);
+  const receiver = `${namespaces.join("")}${alternatives(resources)}`;
+  return need(new RegExp(`(?<![\\w$])${receiver}${SEPARATOR}${escapeRegExp(method)}\\s*\\(`), resources.map((form) => [...tokens2(form), ...tokens2(method)]));
+}
+function rootField(field3) {
+  const alias = "(?:\\w+\\s*:\\s*)?";
+  return need(new RegExp(`(?:^|\\{)\\s*${alias}${escapeRegExp(field3)}\\s*${GRAPHQL_ARGUMENT}`), [tokens2(field3)]);
+}
+function callPattern(call2) {
+  const path2 = call2.slice(0, -"()".length).split(".");
+  const name = path2.at(-1) ?? "";
+  const owner = path2.slice(0, -1);
+  return ROOT_CALL.test(call2) ? rootField(name) : methodCall(owner, name);
+}
+var GRAPHQL_ROOTS, ROOT_CALL, METHOD_CALL, SEPARATOR, GRAPHQL_ARGUMENT;
+var init_calls3 = __esm({
+  "packages/core/dist/src/match/calls.js"() {
+    "use strict";
+    init_src3();
+    init_line_index();
+    init_word_forms();
+    GRAPHQL_ROOTS = ["Query", "QueryRoot", "Mutation", "Subscription"];
+    ROOT_CALL = new RegExp(`^(?:${GRAPHQL_ROOTS.join("|")})\\.\\w+\\(\\)$`);
+    METHOD_CALL = /^\w+(?:\.[\w-]+){2,}\(\)$/;
+    SEPARATOR = "\\s*(?:\\.|->|::|\\\\)\\s*";
+    GRAPHQL_ARGUMENT = "\\(\\s*\\$?\\w+\\s*:";
+  }
+});
+
+// packages/core/dist/src/match/confidence.js
+function vendorNames(provider) {
+  const names3 = [
+    provider.name,
+    provider.apiHost,
+    ...provider.sdks.map((sdk) => sdk.package)
+  ].filter((name) => Boolean(name));
+  return new RegExp(names3.map(escapeRegExp).join("|"), "i");
+}
+function lowConfidence(provider) {
+  const mentions = vendorNames(provider);
+  return ({ file, text: text4 }) => TEST_FILE.test(file) || !mentions.test(text4);
+}
+function searchedLast(file) {
+  return TEST_FILE.test(file) || MIGRATION_FILE.test(file);
+}
+function byConfidence(matches) {
+  return {
+    high: matches.filter((m) => m.confidence !== "low"),
+    low: matches.filter((m) => m.confidence === "low")
+  };
+}
+function matchedInCode(event) {
+  return event.matches.some((m) => m.confidence !== "low");
+}
+var MIGRATION_FILE;
+var init_confidence = __esm({
+  "packages/core/dist/src/match/confidence.js"() {
+    "use strict";
+    init_src3();
+    MIGRATION_FILE = /(?:^|\/)(?:migrations?|migrate)\//;
   }
 });
 
@@ -12000,7 +11363,7 @@ var require_typescript = __commonJS({
         isCommaListExpression: () => isCommaListExpression,
         isCommaSequence: () => isCommaSequence,
         isCommaToken: () => isCommaToken,
-        isComment: () => isComment,
+        isComment: () => isComment2,
         isCommonJsExportPropertyAssignment: () => isCommonJsExportPropertyAssignment,
         isCommonJsExportedExpression: () => isCommonJsExportedExpression,
         isCompoundAssignment: () => isCompoundAssignment,
@@ -161555,7 +160918,7 @@ ${lanes.join("\n")}
         }
         return void 0;
       }
-      function isComment(kind2) {
+      function isComment2(kind2) {
         return kind2 === 2 || kind2 === 3;
       }
       function isStringOrRegularExpressionOrTemplateLiteral(kind2) {
@@ -205999,7 +205362,7 @@ ${options2.prefix}` : "\n" : options2.prefix
         }
         function processTrivia(trivia, parent2, contextNode, dynamicIndentation) {
           for (const triviaItem of trivia) {
-            if (isComment(triviaItem.kind) && rangeContainsRange(originalRange, triviaItem)) {
+            if (isComment2(triviaItem.kind) && rangeContainsRange(originalRange, triviaItem)) {
               const triviaItemStart = sourceFile.getLineAndCharacterOfPosition(triviaItem.pos);
               processRange(triviaItem, triviaItemStart, parent2, contextNode, dynamicIndentation);
             }
@@ -206142,7 +205505,7 @@ ${options2.prefix}` : "\n" : options2.prefix
           for (let line3 = line1; line3 < line22; line3++) {
             const lineStartPosition = getStartPositionOfLine(line3, sourceFile);
             const lineEndPosition = getEndLinePosition(line3, sourceFile);
-            if (range3 && (isComment(range3.kind) || isStringOrRegularExpressionOrTemplateLiteral(range3.kind)) && range3.pos <= lineEndPosition && range3.end > lineEndPosition) {
+            if (range3 && (isComment2(range3.kind) || isStringOrRegularExpressionOrTemplateLiteral(range3.kind)) && range3.pos <= lineEndPosition && range3.end > lineEndPosition) {
               continue;
             }
             const whitespaceStart = getTrailingWhitespaceStartPosition(lineStartPosition, lineEndPosition);
@@ -206165,7 +205528,7 @@ ${options2.prefix}` : "\n" : options2.prefix
         function trimTrailingWhitespacesForRemainingRange(trivias) {
           let startPos = previousRange ? previousRange.end : originalRange.pos;
           for (const trivia of trivias) {
-            if (isComment(trivia.kind)) {
+            if (isComment2(trivia.kind)) {
               if (startPos < trivia.pos) {
                 trimTrailingWitespacesForPositions(startPos, trivia.pos - 1, previousRange);
               }
@@ -208257,7 +207620,7 @@ ${options2.prefix}` : "\n" : options2.prefix
         isCommaListExpression: () => isCommaListExpression,
         isCommaSequence: () => isCommaSequence,
         isCommaToken: () => isCommaToken,
-        isComment: () => isComment,
+        isComment: () => isComment2,
         isCommonJsExportPropertyAssignment: () => isCommonJsExportPropertyAssignment,
         isCommonJsExportedExpression: () => isCommonJsExportedExpression,
         isCompoundAssignment: () => isCompoundAssignment,
@@ -209462,7 +208825,7 @@ ${options2.prefix}` : "\n" : options2.prefix
         hasNoTypeScriptSource: () => hasNoTypeScriptSource,
         indent: () => indent22,
         isBackgroundProject: () => isBackgroundProject,
-        isConfigFile: () => isConfigFile,
+        isConfigFile: () => isConfigFile2,
         isConfiguredProject: () => isConfiguredProject,
         isDynamicFileName: () => isDynamicFileName,
         isExternalProject: () => isExternalProject,
@@ -217183,7 +216546,7 @@ Dynamic files must always be opened with service's current directory or service 
           }
         };
       }
-      function isConfigFile(config) {
+      function isConfigFile2(config) {
         return config.kind !== void 0;
       }
       function printProjectWithoutFileNames(project) {
@@ -221183,7 +220546,7 @@ Additional information: BADCLIENT: Bad error code, ${badCode} not found in range
         return { start: positionToLineOffset(scriptInfo, change.span.start), end: positionToLineOffset(scriptInfo, textSpanEnd(change.span)), newText: change.newText };
       }
       function positionToLineOffset(info, position) {
-        return isConfigFile(info) ? locationFromLineAndCharacter(info.getLineAndCharacterOfPosition(position)) : info.positionToLineOffset(position);
+        return isConfigFile2(info) ? locationFromLineAndCharacter(info.getLineAndCharacterOfPosition(position)) : info.positionToLineOffset(position);
       }
       function convertLinkedEditInfoToRanges(linkedEdit, scriptInfo) {
         const ranges = linkedEdit.ranges.map(
@@ -222234,7 +221597,7 @@ Additional information: BADCLIENT: Bad error code, ${badCode} not found in range
         hasNoTypeScriptSource: () => hasNoTypeScriptSource,
         indent: () => indent22,
         isBackgroundProject: () => isBackgroundProject,
-        isConfigFile: () => isConfigFile,
+        isConfigFile: () => isConfigFile2,
         isConfiguredProject: () => isConfiguredProject,
         isDynamicFileName: () => isDynamicFileName,
         isExternalProject: () => isExternalProject,
@@ -222477,7 +221840,7 @@ var init_search = __esm({
     init_src3();
     init_line_index();
     init_access_forms();
-    init_calls();
+    init_calls3();
     init_confidence();
     init_event_names();
     init_jsx();
@@ -222500,6 +221863,811 @@ var init_search = __esm({
       const field3 = s.slice(s.indexOf(".") + 1);
       return need(new RegExp(`${exact}|${accessForms(s)}`), [tokens2(field3)]);
     };
+  }
+});
+
+// packages/core/dist/src/match/model-context.js
+function genericModelId(id) {
+  return id.length <= 3 || /^[a-z]\d/i.test(id);
+}
+function sdkModule({ language, package: name }) {
+  if (language === "javascript")
+    return `["']${escapeRegExp(name)}(?:/[^"']*)?["']`;
+  const parts = name.split("-").map(escapeRegExp);
+  const from = `${parts.slice(0, -1).join("[._]")}\\s+import\\s+${parts.at(-1)}`;
+  const module = parts.length > 1 ? `${parts.join("[._]")}|${from}` : parts[0];
+  return `(?<![\\w./@-])(?:${module})(?!\\w)`;
+}
+function sdkImport(provider) {
+  const modules = provider.sdks.map(sdkModule).join("|");
+  return new RegExp(`^\\s*(?:import|from)\\b.*(?:${modules})|\\brequire\\s*\\(\\s*(?:${modules})`, "m");
+}
+function modelContextOnly(provider, tree3, events2, pattern) {
+  const generic = (e) => e.symbols.some(genericModelId);
+  if (!events2.some((e) => generic(e) && e.matches.length > 0))
+    return events2;
+  const imports = sdkImport(provider);
+  const sdkFiles = tree3.sources().filter(({ text: text4 }) => imports.test(text4));
+  const files = new Set(sdkFiles.map(({ file }) => file));
+  const names3 = new Set(sdkFiles.flatMap(({ text: text4 }) => [...text4.matchAll(MODEL_NAME)].map((m) => m[1])));
+  const inContext = ({ file, text: text4 }) => {
+    const name = ASSIGNED.exec(text4)?.[1];
+    return files.has(file) && MODEL_VALUE.test(text4) || name !== void 0 && names3.has(name);
+  };
+  return events2.map((e) => {
+    if (!generic(e))
+      return e;
+    const distinct2 = e.symbols.filter((s) => !genericModelId(s)).map(pattern);
+    const kept = (m) => distinct2.some((p) => p.test(m.text)) || inContext(m);
+    return { ...e, matches: e.matches.filter(kept) };
+  });
+}
+var MODEL_KEY, MODEL_VALUE, MODEL_NAME, ASSIGNED;
+var init_model_context = __esm({
+  "packages/core/dist/src/match/model-context.js"() {
+    "use strict";
+    init_src3();
+    MODEL_KEY = String.raw`\b(?:model|modelName|model_name)["']?\s*[:=]\s*`;
+    MODEL_VALUE = new RegExp(`${MODEL_KEY}["'\`]`);
+    MODEL_NAME = new RegExp(`${MODEL_KEY}(?:[\\w$]+\\.)*([A-Za-z_$][\\w$]*)`, "g");
+    ASSIGNED = /\b([A-Za-z_$][\w$]*)\s*(?::[^=]*)?=\s*["'`]/;
+  }
+});
+
+// packages/core/dist/src/match/config-models.js
+function isComment(line3) {
+  const text4 = line3.trimStart();
+  return text4.startsWith("#") || text4.startsWith("//");
+}
+function lastSegment(id) {
+  return id.slice(id.lastIndexOf("/") + 1);
+}
+function valueTokens(line3) {
+  const found = [];
+  for (const m of line3.matchAll(TOKEN2)) {
+    const token = m[0].replace(/[:.]+$/, "");
+    const isKey = token !== m[0] || KEY_AFTER.test(line3.slice(m.index + m[0].length));
+    if (isKey || token.includes("//"))
+      continue;
+    found.push({ token, before: line3.slice(0, m.index) });
+  }
+  return found;
+}
+function searchConfigs(tree3, events2, pattern) {
+  const compiled = events2.map((event) => event.symbols.filter((symbol) => symbol.length > 0 && !symbol.startsWith("/")).map(pattern));
+  const result = events2.map(() => []);
+  const sources2 = tree3.configs?.() ?? [];
+  if (sources2.length === 0)
+    return result;
+  const any = new RegExp(compiled.flat().map((p) => p.source).join("|"));
+  const seen = events2.map(() => /* @__PURE__ */ new Set());
+  for (const { file, text: text4 } of sources2) {
+    const low = TEST_FILE.test(file);
+    text4.split("\n").forEach((line3, i) => {
+      if (line3.length > MAX_LINE || isComment(line3) || TABLE.test(line3))
+        return;
+      for (const { token, before } of valueTokens(line3)) {
+        const quoted3 = `"${token}"`;
+        if (!any.test(quoted3))
+          continue;
+        compiled.forEach((patterns, e) => {
+          for (const p of patterns) {
+            const id = p.exec(quoted3)?.[0];
+            if (id === void 0)
+              continue;
+            if (genericModelId(lastSegment(id)) && !MODEL_KEY2.test(before))
+              continue;
+            const key3 = `${file}:${i}:${id}`;
+            if (seen[e].has(key3) || result[e].length >= 2 * MAX_MATCHES)
+              break;
+            seen[e].add(key3);
+            result[e].push({
+              file,
+              line: i + 1,
+              text: id,
+              ...low ? { confidence: "low" } : {}
+            });
+            break;
+          }
+        });
+      }
+    });
+  }
+  return result;
+}
+var TOKEN2, MODEL_KEY2, KEY_AFTER, MAX_LINE, TABLE;
+var init_config_models = __esm({
+  "packages/core/dist/src/match/config-models.js"() {
+    "use strict";
+    init_src3();
+    init_search();
+    init_model_context();
+    TOKEN2 = /[A-Za-z0-9][\w.:/-]*/g;
+    MODEL_KEY2 = /model/i;
+    KEY_AFTER = /^["']?\s*[:=]/;
+    MAX_LINE = 4e3;
+    TABLE = /^\s*\[+[^\]"']*\]+\s*$/;
+  }
+});
+
+// packages/core/dist/src/match/lifecycle.js
+function shifted(date, months2, days) {
+  const moved = /* @__PURE__ */ new Date(`${date.slice(0, 10)}T00:00:00Z`);
+  moved.setUTCMonth(moved.getUTCMonth() + months2);
+  moved.setUTCDate(moved.getUTCDate() + days);
+  return moved.toISOString().slice(0, 10);
+}
+function supportWindow(policy, release3) {
+  const months2 = policy.supportMonths ?? 0;
+  return {
+    unsupported: shifted(release3, months2, 0),
+    fallsForward: shifted(release3, months2, policy.accessDays ?? 0)
+  };
+}
+function oldestAccessible(policy, versions, after) {
+  const accessible = versions.find((entry) => entry.date <= after && supportWindow(policy, entry.date).fallsForward > after);
+  return accessible?.version ?? null;
+}
+function pinWarning(policy, versions, pin, today) {
+  if (!MONTH_NAMED.test(pin.value))
+    return null;
+  const release3 = versions.find((entry) => entry.version === pin.value)?.date ?? `${pin.value}-01`;
+  const { unsupported, fallsForward } = supportWindow(policy, release3);
+  const place2 = {
+    version: pin.value,
+    file: pin.file,
+    ...pin.line ? { line: pin.line } : {},
+    docs: policy.docs
+  };
+  if (fallsForward <= today) {
+    const to2 = oldestAccessible(policy, versions, today);
+    return { ...place2, kind: "retired", since: fallsForward, to: to2 };
+  }
+  if (unsupported > today)
+    return null;
+  const to = oldestAccessible(policy, versions, fallsForward);
+  return {
+    ...place2,
+    kind: "unsupported",
+    since: unsupported,
+    fallsForward,
+    to
+  };
+}
+function distinct(pins) {
+  const seen = /* @__PURE__ */ new Set();
+  return pins.filter((pin) => {
+    const key3 = `${pin.value}
+${pin.file}
+${pin.line ?? ""}`;
+    if (seen.has(key3))
+      return false;
+    seen.add(key3);
+    return true;
+  });
+}
+function versionWarnings(provider, surface, versions, today) {
+  const policy = provider.versioning;
+  if (!policy || !surface.sdk)
+    return [];
+  if (policy.unset && !surface.apiVersion)
+    return [{ kind: "unset", hint: policy.unset, docs: policy.docs }];
+  if (!policy.supportMonths)
+    return [];
+  const pins = surface.apiVersion ? [surface.apiVersion, ...surface.pins] : surface.pins;
+  return distinct(pins).map((pin) => pinWarning(policy, versions, pin, today)).filter((warning) => warning !== null);
+}
+var MONTH_NAMED;
+var init_lifecycle = __esm({
+  "packages/core/dist/src/match/lifecycle.js"() {
+    "use strict";
+    MONTH_NAMED = /^\d{4}-\d{2}$/;
+  }
+});
+
+// packages/core/dist/src/render/coverage.js
+function noun(count, word3) {
+  return count === 1 ? word3 : `${word3}s`;
+}
+function plural2(count, word3) {
+  return `${count} ${noun(count, word3)}`;
+}
+function nameOf(language) {
+  return LANGUAGE_NAMES[language] ?? language;
+}
+function mostFirst(counts4) {
+  return Object.entries(counts4).sort(([a, x], [b, y]) => y - x || a.localeCompare(b));
+}
+function checked(coverage2, findings2) {
+  const languages = mostFirst(coverage2.files);
+  const total = languages.reduce((sum, [, count]) => sum + count, 0);
+  const names3 = languages.length ? ` (${languages.map(([language]) => nameOf(language)).join(", ")})` : "";
+  const clean = findings2 === 0 && total > 0 && coverage2.providers > 0;
+  return clean ? `No findings in ${plural2(total, "checked file")}${names3}` : `Checked ${plural2(total, "file")}${names3}`;
+}
+function notCovered({ notCovered: notCovered2 }) {
+  const parts = mostFirst(notCovered2.files).map(([language, count]) => `${count} ${nameOf(language)} ${noun(count, "file")}`);
+  if (notCovered2.large > 0)
+    parts.push(`${plural2(notCovered2.large, "file")} over 1 MB`);
+  if (notCovered2.manifests > 0)
+    parts.push(`${plural2(notCovered2.manifests, "manifest")} not parsed`);
+  if (notCovered2.providers > 0)
+    parts.push(`${plural2(notCovered2.providers, "provider")} without change data`);
+  return parts;
+}
+function coverageLine(coverage2, findings2) {
+  const parts = [
+    checked(coverage2, findings2),
+    `${plural2(coverage2.providers, "provider")} tracked`
+  ];
+  const missing = notCovered(coverage2);
+  if (missing.length > 0)
+    parts.push(`not covered: ${missing.join(", ")}`);
+  return parts.join(" \xB7 ");
+}
+function findingCount(results) {
+  return results.reduce((sum, r) => sum + r.events.filter(matchedInCode).length + (r.prePin?.length ?? 0), 0);
+}
+var LANGUAGE_NAMES;
+var init_coverage = __esm({
+  "packages/core/dist/src/render/coverage.js"() {
+    "use strict";
+    init_confidence();
+    LANGUAGE_NAMES = {
+      javascript: "JavaScript",
+      typescript: "TypeScript",
+      python: "Python",
+      ruby: "Ruby",
+      php: "PHP",
+      java: "Java",
+      graphql: "GraphQL",
+      go: "Go",
+      csharp: "C#"
+    };
+  }
+});
+
+// packages/core/dist/src/render/lifecycle.js
+function versionWarningText(warning, where2) {
+  if (warning.kind === "unset")
+    return `no changes are listed without an API version. ${warning.hint}; run inspect with --api-version <version> to list the changes after that version (${warning.docs})`;
+  const place2 = warning.file ? ` (${where2(warning.file, warning.line)})` : "";
+  const pinned = `API version ${warning.version}${place2}`;
+  const to = warning.to ?? "the oldest accessible version";
+  if (warning.kind === "retired")
+    return `${pinned} is retired: requests fall forward to ${to} since ${warning.since} (${warning.docs})`;
+  return `${pinned} is unsupported since ${warning.since}: requests fall forward to ${to} from ${warning.fallsForward} (${warning.docs})`;
+}
+var init_lifecycle2 = __esm({
+  "packages/core/dist/src/render/lifecycle.js"() {
+    "use strict";
+  }
+});
+
+// packages/core/dist/src/render/text.js
+function versionLine(result, where2) {
+  const pin = result.surface.apiVersion;
+  const provider = providers[result.provider];
+  const sdk = result.surface.sdk;
+  if (!pin) {
+    const hint4 = provider.unpinned[sdk?.language ?? "javascript"];
+    const value2 = provider.versionless ? "none" : provider.versioning?.unset ? "not set in code" : "unknown";
+    return `API version: ${value2} (${hint4})`;
+  }
+  if (pin.source === "override")
+    return `API version: ${pin.value} (override)`;
+  if (pin.source === "pinned") {
+    return `API version: ${pin.value} (pinned, ${where2(pin.file, pin.line)})`;
+  }
+  const rule = provider.sdks.find((s) => s.package === sdk?.package);
+  const byMinor = Object.keys(rule?.defaultApiVersion ?? {}).some((k) => k.includes("."));
+  const from = byMinor ? `SDK ${sdk?.version}` : `SDK major ${sdk?.version?.split(".")[0] ?? "?"}`;
+  return `API version: ${pin.value} (inferred from ${from}, ${where2(pin.file)})`;
+}
+function samePin(pin, other) {
+  return !!other && pin.value === other.value && pin.file === other.file && pin.line === other.line;
+}
+function latestText(result) {
+  const latest = result.latest ?? "unknown";
+  const candidate = result.releaseCandidate;
+  return candidate ? `${latest} stable, ${candidate} release candidate` : latest;
+}
+function dataStart(result) {
+  const start = providers[result.provider].dataStart;
+  const value2 = result.surface.apiVersion?.value;
+  return start && value2 && value2 < start ? ` (data starts ${start})` : "";
+}
+function eventFlag(event, today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10)) {
+  if (event.retires && event.retiresNotBefore)
+    return `retires not before ${event.retires}`;
+  if (event.retires)
+    return event.retires <= today ? "retired" : `retires ${event.retires}`;
+  return event.breaking ? "breaking" : event.jev && JEV_FLAGS[event.jev];
+}
+function prePinFlag(event, pin) {
+  return `removed in ${event.version}, at or before your pin ${pin}, still referenced`;
+}
+function lowCount(count) {
+  return `${count} low-confidence ${count === 1 ? "match" : "matches"}`;
+}
+function lowConfidenceLine(event, count) {
+  const title = providers[event.provider]?.title ?? event.provider;
+  return `+${lowCount(count)} in tests or files without a ${title} reference`;
+}
+function eventBlock(event, flag = eventFlag(event)) {
+  const lines3 = [
+    `  ${event.version}  ${event.title}${flag ? `  [${flag}]` : ""}`,
+    `    ${event.changelog}`
+  ];
+  if (event.symbols.length > 0) {
+    lines3.push(`    symbols: ${event.symbols.join(", ")}`);
+  }
+  const { high, low } = byConfidence(event.matches);
+  for (const m of high) {
+    lines3.push(`    ${m.repo ? `${m.repo}:` : ""}${m.file}:${m.line}  ${m.text}`);
+  }
+  if (low.length > 0)
+    lines3.push(`    ${lowConfidenceLine(event, low.length)}`);
+  return lines3;
+}
+function listed(events2) {
+  return events2.filter((e) => e.breaking || e.matches.length > 0);
+}
+function counts(events2, total) {
+  const breaking = events2.filter((e) => e.breaking).length;
+  const matched = events2.filter(matchedInCode).length;
+  const both = events2.filter((e) => e.breaking && matchedInCode(e)).length;
+  const lines3 = [`${total}, ${breaking} breaking, ${matched} matched in code`];
+  if (both > 0)
+    lines3.push(`Breaking with matches: ${both}`);
+  return lines3;
+}
+function summary(events2, total) {
+  const lines3 = counts(events2, total);
+  const shown2 = listed(events2);
+  if (shown2.length > 0)
+    lines3.push("");
+  for (const event of shown2)
+    lines3.push(...eventBlock(event));
+  return lines3;
+}
+function facts(result, where2 = plain2) {
+  const { surface, provider } = result;
+  const sdk = surface.sdk;
+  if (!sdk)
+    return [];
+  const version2 = sdk.version ?? "unknown";
+  const shown2 = where2 === plain2 ? version2 : code2(version2);
+  const lines3 = [
+    `${providers[provider].title} SDK: ${sdk.package} ${shown2} (${sdk.language}, ${where2(sdk.file)})`,
+    versionLine(result, where2) + dataStart(result)
+  ];
+  const webhooks = surface.pins.find((p) => p.role === "webhooks");
+  if (webhooks)
+    lines3.push(`Webhooks API version: ${webhooks.value} (${where2(webhooks.file, webhooks.line)})`);
+  const others = surface.pins.filter((p) => !p.role && !samePin(p, surface.apiVersion));
+  if (others.length > 0) {
+    lines3.push(`Other pins: ${others.map((p) => `${p.value} (${where2(p.file, p.line)})`).join(", ")}`);
+  }
+  const latest = providers[provider].versionless ? "Latest notice" : "Latest";
+  lines3.push(`${latest}: ${latestText(result)}`);
+  for (const warning of result.warnings ?? [])
+    lines3.push(`Warning: ${warning}`);
+  for (const warning of result.versionWarnings ?? [])
+    lines3.push(`Warning: ${versionWarningText(warning, where2)}`);
+  return lines3;
+}
+function prePinLines(result) {
+  const events2 = result.prePin ?? [];
+  const pin = result.surface.apiVersion?.value;
+  if (events2.length === 0 || !pin)
+    return [];
+  return [
+    "",
+    `Removed at or before your pin ${pin}, still referenced in code: ${events2.length}`,
+    "",
+    ...events2.flatMap((e) => eventBlock(e, prePinFlag(e, pin)))
+  ];
+}
+function totalLine(result) {
+  const base = result.surface.apiVersion?.value;
+  const count = `${result.events.length} events`;
+  if (providers[result.provider].versionless)
+    return `Retirements matching this code: ${count}`;
+  return base ? `Changes after ${base}: ${count}` : null;
+}
+function renderText(result) {
+  if (!result.surface.sdk) {
+    return `${result.provider}: not detected in ${result.path}`;
+  }
+  const lines3 = facts(result);
+  const total = totalLine(result);
+  if (total)
+    lines3.push(...summary(result.events, total), ...prePinLines(result));
+  return lines3.join("\n");
+}
+var plain2, JEV_FLAGS, PRE_PIN_HEADING;
+var init_text = __esm({
+  "packages/core/dist/src/render/text.js"() {
+    "use strict";
+    init_src4();
+    init_confidence();
+    init_issue();
+    init_lifecycle2();
+    plain2 = (file, line3) => line3 ? `${file}:${line3}` : file;
+    JEV_FLAGS = {
+      breaking: "likely breaking",
+      check: "review"
+    };
+    PRE_PIN_HEADING = "Removed at or before your pin, still referenced in code";
+  }
+});
+
+// packages/core/dist/src/render/event-markdown.js
+function heading(event) {
+  const flag = eventFlag(event);
+  const title = label3(event.title);
+  const linked = SAFE_URL.test(event.changelog) ? `[${title}](${event.changelog})` : title;
+  return `- **${event.version}** ${linked}${flag ? ` \u2014 ${flag}` : ""}`;
+}
+function prePinHeading(event) {
+  const title = label3(event.title);
+  const linked = SAFE_URL.test(event.changelog) ? `[${title}](${event.changelog})` : title;
+  return `- **${event.version}** ${linked} \u2014 ${prePinFlag(event, event.prePin ?? "")}`;
+}
+function eventMarkdown(event, where2, head = heading) {
+  const lines3 = [head(event)];
+  if (event.symbols.length > 0) {
+    lines3.push(`  - symbols: ${event.symbols.map(code2).join(", ")}`);
+  }
+  const place2 = (m) => {
+    const repo = m.repo ? `${code2(m.repo)} ` : "";
+    return `- ${repo}${where2(m.file, m.line, m.repo)} ${code2(m.text)}`;
+  };
+  const { high, low } = byConfidence(event.matches);
+  lines3.push(...high.map((m) => `  ${place2(m)}`));
+  if (low.length > 0)
+    lines3.push(`  - <details><summary>${lowConfidenceLine(event, low.length)}</summary>`, "", ...low.map((m) => `    ${place2(m)}`), "", "    </details>");
+  return lines3;
+}
+var init_event_markdown = __esm({
+  "packages/core/dist/src/render/event-markdown.js"() {
+    "use strict";
+    init_confidence();
+    init_issue();
+    init_text();
+  }
+});
+
+// packages/core/dist/src/render/issue.js
+function code2(text4) {
+  const runs2 = text4.match(/`+/g) ?? [];
+  const longest = Math.max(0, ...runs2.map((run2) => run2.length));
+  const fence2 = "`".repeat(longest + 1);
+  const line3 = text4.replace(/[\r\n]+/g, " ");
+  if (!line3)
+    return "` `";
+  return longest ? `${fence2} ${line3} ${fence2}` : `${fence2}${line3}${fence2}`;
+}
+function inert(text4) {
+  return text4.replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/#(?=\d)/g, "#\u200B").replace(/:(?=\/\/)/g, "\\:").replace(/(www)\./gi, "$1\\.").replace(/`/g, "\\`");
+}
+function outsideCode(text4, escape) {
+  let out = "";
+  let from = 0;
+  const runs2 = /`+/g;
+  for (let run2 = runs2.exec(text4); run2; run2 = runs2.exec(text4)) {
+    const word3 = text4.slice(0, run2.index).split(/\s/).pop() ?? "";
+    if (AUTOLINK.test(word3))
+      continue;
+    const close = new RegExp(`(?<!\`)${run2[0]}(?!\`)`, "g");
+    close.lastIndex = run2.index + run2[0].length;
+    const end = close.exec(text4);
+    if (!end)
+      continue;
+    out += escape(text4.slice(from, run2.index));
+    from = end.index + end[0].length;
+    out += text4.slice(run2.index, from);
+    runs2.lastIndex = from;
+  }
+  return out + escape(text4.slice(from));
+}
+function label3(text4) {
+  return outsideCode(text4.replace(/[\r\n]+/g, " ").replace(/[[\]\\]/g, "\\$&").replace(/@/g, "@\u200B"), inert);
+}
+function linker(commit) {
+  if (!commit)
+    return (file, line3) => code2(line3 ? `${file}:${line3}` : file);
+  return (file, line3) => {
+    const path2 = encodeURI(`${commit.prefix}${file}`).replace(/\(/g, "%28").replace(/\)/g, "%29");
+    const anchor2 = line3 ? `#L${line3}` : "";
+    const text4 = label3(line3 ? `${file}:${line3}` : file);
+    return `[${text4}](${commit.url}/blob/${commit.sha}/${path2}${anchor2})`;
+  };
+}
+function section3(result, where2, budget) {
+  const title = providers[result.provider].title;
+  const lines3 = [
+    `## ${title}`,
+    "",
+    ...facts(result, where2).map((l) => `- ${l}`)
+  ];
+  const total = totalLine(result);
+  if (!total)
+    return lines3;
+  lines3.push(...counts(result.events, total).map((l) => `- ${l}`));
+  const shown2 = listed(result.events);
+  if (shown2.length > 0)
+    lines3.push("", `### ${title} changes to review`, "");
+  let size = lines3.join("\n").length;
+  const pin = result.surface.apiVersion?.value;
+  const drift = pin ? result.prePin ?? [] : [];
+  const entries = [
+    ...shown2.map((event) => ({ event, head: heading })),
+    ...drift.map((event) => ({
+      event: { ...event, prePin: pin },
+      head: prePinHeading
+    }))
+  ];
+  let inDrift = false;
+  for (const [i, { event, head }] of entries.entries()) {
+    const block3 = eventMarkdown(event, where2, head);
+    size += block3.join("\n").length + 1;
+    if (size > budget) {
+      lines3.push(`- ${entries.length - i} more listed events: run \`upseam inspect ${result.provider}\` for the full list`);
+      break;
+    }
+    if (head === prePinHeading && !inDrift) {
+      inDrift = true;
+      lines3.push("", `### ${title}: ${PRE_PIN_HEADING}`, "");
+    }
+    lines3.push(...block3);
+  }
+  return lines3;
+}
+function hints(results) {
+  const groups = /* @__PURE__ */ new Map();
+  for (const result of results) {
+    const provider = providers[result.provider];
+    const hint4 = provider.configure ?? PIN;
+    groups.set(hint4, [...groups.get(hint4) ?? [], provider.title]);
+  }
+  if (groups.size <= 1)
+    return [[...groups.keys()][0] ?? PIN];
+  return [...groups].map(([hint4, titles]) => `${titles.join(", ")}: ${hint4}`);
+}
+function renderIssue(results, commit, coverage2) {
+  const where2 = linker(commit);
+  const at2 = commit ? ` at the [scanned commit](${commit.url}/commit/${commit.sha})` : "";
+  const linked = commit ? "; lines are linked at the scanned commit" : "";
+  const loose = results.filter((r) => providers[r.provider].versionless);
+  const retirements2 = "the model, endpoint and beta header retirements that match your code, with shutdown dates and replacements";
+  const intro = results.length === 0 ? `Upseam checked this repository${at2} and detected no supported API SDK.` : loose.length === results.length ? `Upseam checked this repository${at2}: the API SDKs it uses and ${retirements2}${linked}.` : `Upseam checked this repository${at2}: the API SDKs it uses, the API version they are pinned to and the changes published after that version${loose.length > 0 ? `, and, for APIs without versions, ${retirements2}` : ""}. Breaking changes and changes that match your code are listed${linked}.`;
+  const lines3 = [MARKER, intro, ""];
+  const budget = MAX_BODY / Math.max(results.length, 1);
+  for (const result of results) {
+    lines3.push(...section3(result, where2, budget), "");
+  }
+  lines3.push("## How to configure", "", "- Upseam runs from the workflow that calls the Upseam action; its `schedule` sets how often this issue is refreshed.", ...hints(results).map((hint4) => `- ${hint4}`), "- This issue is updated in place and never reopened. To stop, remove the workflow.", "", FEEDBACK);
+  if (coverage2)
+    lines3.push("", TRAILER, "", `Coverage of this scan: ${coverageLine(coverage2, findingCount(results))}`);
+  return lines3.join("\n");
+}
+var MARKER, TITLE, TRAILER, FEEDBACK_URL, FEEDBACK, MAX_BODY, PIN, AUTOLINK, SAFE_URL;
+var init_issue = __esm({
+  "packages/core/dist/src/render/issue.js"() {
+    "use strict";
+    init_src4();
+    init_coverage();
+    init_event_markdown();
+    init_text();
+    MARKER = "<!-- upseam:report -->";
+    TITLE = "Upseam watches this repository";
+    TRAILER = "<!-- upseam:scan -->";
+    FEEDBACK_URL = "https://github.com/upseam/upseam/issues/new/choose";
+    FEEDBACK = `Something wrong or missing? [Tell us](${FEEDBACK_URL}).`;
+    MAX_BODY = 6e4;
+    PIN = "Pin the API version in the API client configuration so the base version is exact, not inferred.";
+    AUTOLINK = /:\/\/|www\./i;
+    SAFE_URL = /^https?:\/\/[^\s()<>]+$/;
+  }
+});
+
+// packages/core/dist/src/render/group.js
+function vendor(provider) {
+  return providers[provider]?.title ?? provider;
+}
+function link(event) {
+  return SAFE_URL.test(event.changelog) ? `[${label3(event.title)}](${event.changelog})` : code2(event.title);
+}
+var plural3;
+var init_group = __esm({
+  "packages/core/dist/src/render/group.js"() {
+    "use strict";
+    init_src4();
+    init_confidence();
+    init_issue();
+    init_text();
+    plural3 = (n, word3) => `${n} ${word3}${n === 1 ? "" : "s"}`;
+  }
+});
+
+// packages/core/dist/src/patch/capability.js
+function replacements(event) {
+  const names3 = (event.replacement ?? "").split(",").map((s) => s.trim());
+  return [...new Set(names3.filter(Boolean))];
+}
+function severalReplacements(title, event) {
+  const names3 = replacements(event);
+  return `${title} names ${names3.length} replacements (${names3.join(", ")}); choose one by hand.`;
+}
+function successorGroup(group3) {
+  const events2 = all(group3);
+  return events2.length > 0 && events2.every((e) => e.retires && replacements(e).length > 0);
+}
+function withCapabilities(groups, enabled) {
+  return groups.map((group3) => {
+    if (!successorGroup(group3))
+      return group3;
+    if (enabled)
+      return { ...group3, kind: "capability" };
+    return {
+      ...group3,
+      kind: "fix",
+      events: [],
+      needsHuman: [
+        ...group3.events.map((event) => ({ event, reason: CAPABILITIES_OFF })),
+        ...group3.needsHuman
+      ]
+    };
+  });
+}
+var CAPABILITIES_OFF, all;
+var init_capability = __esm({
+  "packages/core/dist/src/patch/capability.js"() {
+    "use strict";
+    init_src2();
+    init_group();
+    init_issue();
+    CAPABILITIES_OFF = "New capabilities are off for this repository, so moving to the successor model needs you.";
+    all = (group3) => [
+      ...group3.events,
+      ...group3.needsHuman.map((n) => n.event)
+    ];
+  }
+});
+
+// packages/core/dist/src/match/target.js
+function sdkReach(subscription, sdkVersion, catalog = providers) {
+  const provider = catalog[subscription.provider];
+  if (!provider || provider.versionless || !sdkVersion)
+    return null;
+  const rule = provider.sdks.find((s) => s.package === subscription.sdk.package && s.language === subscription.sdk.language);
+  return rule ? defaultFor(rule, sdkVersion) : null;
+}
+function targetVersion(subscription, sdkVersion, catalog = providers) {
+  const reach = sdkReach(subscription, sdkVersion, catalog);
+  if (!reach)
+    return null;
+  const from = subscription.apiVersion;
+  return from && compareVersions(from, reach) > 0 ? from : reach;
+}
+var init_target = __esm({
+  "packages/core/dist/src/match/target.js"() {
+    "use strict";
+    init_src2();
+    init_src4();
+    init_src3();
+  }
+});
+
+// packages/core/dist/src/match/groups.js
+function fixable(group3) {
+  return group3.events.length > 0;
+}
+function notMechanical(event) {
+  return MECHANICAL.includes(event.type) ? null : `A ${event.type.replace("_", " ")} is not a mechanical change.`;
+}
+function usedSymbol(event) {
+  const { high } = byConfidence(event.matches);
+  return event.symbols.find((s) => high.some((m) => m.text.includes(s))) ?? null;
+}
+function singleReplacement(events2) {
+  const named3 = [...new Set(events2.map((e) => e.replacement))];
+  const to = named3.length === 1 ? named3[0] : void 0;
+  return to && replacements({ replacement: to }).length === 1 ? to : void 0;
+}
+function matchedBreaking(result) {
+  return result.events.filter((e) => e.breaking && matchedInCode(e));
+}
+function group2(base, events2, blocker) {
+  const reasons = events2.map(blocker);
+  const blocked = reasons.some((r) => r !== null);
+  return {
+    ...base,
+    key: `${base.provider}/${base.to}`,
+    kind: "fix",
+    events: blocked ? [] : events2,
+    needsHuman: blocked ? events2.map((event, i) => ({ event, reason: reasons[i] ?? HELD })) : []
+  };
+}
+function newest(events2) {
+  return events2.map((e) => e.version).sort(compareVersions).at(-1);
+}
+function versioned(result, repo, catalog) {
+  const sdk = result.surface.sdk;
+  const from = result.surface.apiVersion?.value ?? null;
+  const subscription = {
+    provider: result.provider,
+    sdk: { package: sdk.package, language: sdk.language },
+    apiVersion: from
+  };
+  const target3 = targetVersion(subscription, sdk.version, catalog);
+  const reach = sdkReach(subscription, sdk.version, catalog);
+  const base = { repo, provider: result.provider, from };
+  const matched = matchedBreaking(result);
+  const reachable = (e) => target3 !== null && compareVersions(e.version, target3) <= 0;
+  const within2 = matched.filter(reachable);
+  const beyond = matched.filter((e) => !reachable(e));
+  const found = `${sdk.package} ${sdk.version ?? "unknown"}`;
+  const older = reach !== target3 ? `, older than the pinned ${from}` : "";
+  const bump = reach ? (e) => `Bump SDK: ${found} supports API versions up to ${reach}${older}; this change is in ${e.version}.` : () => `No API version is known for ${found}; choose the target by hand.`;
+  const groups = [];
+  if (within2.length > 0)
+    groups.push(group2({ ...base, to: target3 }, within2, notMechanical));
+  if (beyond.length > 0)
+    groups.push(group2({ ...base, to: newest(beyond) }, beyond, bump));
+  return groups;
+}
+function prePinGroups(result, repo) {
+  const pin = result.surface.apiVersion?.value;
+  const found = (result.prePin ?? []).filter(matchedInCode);
+  if (!pin || found.length === 0)
+    return [];
+  const base = { repo, provider: result.provider, from: null };
+  return [...new Set(found.map((e) => e.version))].sort(compareVersions).map((version2) => group2({ ...base, to: version2 }, found.filter((e) => e.version === version2).map((e) => ({ ...e, prePin: pin })), notMechanical));
+}
+function retirements(result, repo, catalog) {
+  const title = catalog[result.provider]?.title ?? result.provider;
+  const events2 = matchedBreaking(result);
+  const versions = [...new Set(events2.map((e) => e.version))].sort(compareVersions);
+  const blocker = (e) => {
+    const names3 = replacements(e).length;
+    if (names3 > 1)
+      return severalReplacements(title, e);
+    return notMechanical(e) ?? (names3 === 1 ? null : `${title} names no replacement, so moving off it needs you.`);
+  };
+  return versions.map((version2) => {
+    const own = events2.filter((e) => e.version === version2);
+    const built = group2({
+      repo,
+      provider: result.provider,
+      from: own.length === 1 ? usedSymbol(own[0]) : null,
+      to: version2
+    }, own, blocker);
+    const to = singleReplacement(own);
+    return to ? { ...built, to } : built;
+  });
+}
+function groupChanges(inspections, repo, capabilities = true, catalog = providers) {
+  const groups = inspections.filter((r) => r.surface.sdk).flatMap((r) => catalog[r.provider]?.versionless ? retirements(r, repo, catalog) : [...versioned(r, repo, catalog), ...prePinGroups(r, repo)]);
+  return withCapabilities(groups, capabilities);
+}
+var MECHANICAL, HELD;
+var init_groups = __esm({
+  "packages/core/dist/src/match/groups.js"() {
+    "use strict";
+    init_src2();
+    init_src4();
+    init_capability();
+    init_confidence();
+    init_target();
+    MECHANICAL = [
+      "removal",
+      "rename",
+      "type_change"
+    ];
+    HELD = "Held back: another change in this group needs you, so Upseam did not patch it.";
   }
 });
 
@@ -222560,7 +222728,7 @@ var init_removed = __esm({
   "packages/core/dist/src/match/removed.js"() {
     "use strict";
     init_src3();
-    init_calls();
+    init_calls3();
     init_groups();
     init_search();
     LIST_WRAPPER = "data";
@@ -222624,6 +222792,12 @@ function latestVersions(provider, versions, today) {
     releaseCandidate: newest2.version
   };
 }
+function withConfigs(events2, configs) {
+  return events2.map((event, i) => ({
+    ...event,
+    matches: [...event.matches, ...configs[i]]
+  }));
+}
 function inspectProvider(provider, tree3, options2 = {}) {
   const { apiVersion: apiVersion2, today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10) } = options2;
   const versions = (options2.changes ?? bundledChanges).versions(provider.name);
@@ -222638,7 +222812,8 @@ function inspectProvider(provider, tree3, options2 = {}) {
   const base = surface.apiVersion?.value;
   const all2 = versions.flatMap((entry) => entry.events);
   const low = lowConfidence(provider);
-  const events2 = !surface.sdk ? [] : provider.versionless ? fineTuningOnly(tree3, searchSymbols(tree3, all2, modelIds(provider, all2))).filter((e) => e.matches[0]) : base ? searchSymbols(tree3, eventsAfter(versions, base), void 0, lineSymbols, low) : [];
+  const ids = modelIds(provider, all2);
+  const events2 = !surface.sdk ? [] : provider.versionless ? withConfigs(modelContextOnly(provider, tree3, fineTuningOnly(tree3, searchSymbols(tree3, all2, ids)), ids), searchConfigs(tree3, all2, ids)).filter((e) => e.matches[0]) : base ? searchSymbols(tree3, eventsAfter(versions, base), void 0, lineSymbols, low) : [];
   events2.sort(byRankThenVersion);
   const prePin = surface.sdk && !provider.versionless && base ? prePinDrift(tree3, versions, base, low) : [];
   const lifecycle = versionWarnings(provider, surface, versions, today);
@@ -222663,9 +222838,11 @@ var init_inspect2 = __esm({
     init_src2();
     init_src3();
     init_ports();
+    init_config_models();
     init_confidence();
     init_lifecycle();
     init_pre_pin();
+    init_model_context();
     init_removed();
     init_search();
     InspectError = class extends Error {
@@ -222795,7 +222972,7 @@ function findSecrets(text4) {
       if (free(match.index, end))
         spans.push({ kind: kind2, start: match.index, end });
     }
-  for (const match of text4.matchAll(ASSIGNED)) {
+  for (const match of text4.matchAll(ASSIGNED2)) {
     const { name, value: value2 } = match.groups;
     const [start, end] = match.indices.groups.value;
     if (secretName(name) && looksRandom(value2) && free(start, end))
@@ -222807,7 +222984,7 @@ function findSecrets(text4) {
     start: s.start
   }));
 }
-var KEY_FORMATS, NAME2, TYPE_ANNOTATION, QUOTED_VALUE, ASSIGNED, wordSet, SECRET_WORDS, PUBLIC_WORDS, RANDOM_RUN, MIN_ENTROPY;
+var KEY_FORMATS, NAME2, TYPE_ANNOTATION, QUOTED_VALUE, ASSIGNED2, wordSet, SECRET_WORDS, PUBLIC_WORDS, RANDOM_RUN, MIN_ENTROPY;
 var init_secrets = __esm({
   "packages/core/dist/src/patch/secrets.js"() {
     "use strict";
@@ -222841,7 +223018,7 @@ var init_secrets = __esm({
     NAME2 = String.raw`(?<![\w$-])(?<name>[A-Za-z_$][\w$-]*)["'\]]*\s*`;
     TYPE_ANNOTATION = String.raw`(?::\s*[A-Za-z_$][\w$.]*\s*)?`;
     QUOTED_VALUE = String.raw`(?<quote>["'\x60])(?<value>[^"'\x60\\\s]{16,512})\k<quote>`;
-    ASSIGNED = new RegExp(`${NAME2}${TYPE_ANNOTATION}[:=]\\s*${QUOTED_VALUE}`, "dg");
+    ASSIGNED2 = new RegExp(`${NAME2}${TYPE_ANNOTATION}[:=]\\s*${QUOTED_VALUE}`, "dg");
     wordSet = (text4) => new Set(text4.trim().split(/\s+/));
     SECRET_WORDS = wordSet(`key keys apikey secret secrets token tokens
   password passwd pwd passphrase credential credentials auth bearer`);
@@ -222962,20 +223139,27 @@ function style(conventions) {
     lines3.push(semicolons ? "End statements with semicolons." : "Omit semicolons.");
   return lines3;
 }
-function briefFiles(group3) {
+function confidentFiles(group3) {
   const confident = group3.events.flatMap((e) => byConfidence(e.matches).high);
   return [...new Set(confident.map((m) => m.file))].filter((f) => !f.startsWith(".github/")).sort();
 }
+function briefFiles(group3) {
+  return confidentFiles(group3).filter((f) => !isConfigFile(f));
+}
+function patchFiles(group3) {
+  return confidentFiles(group3);
+}
 function buildBrief(group3, files, conventions, packages = []) {
   const wanted2 = briefFiles(group3);
-  const missing = wanted2.filter((f) => !Object.hasOwn(files, f));
+  const patch2 = patchFiles(group3);
+  const missing = patch2.filter((f) => !Object.hasOwn(files, f));
   if (missing.length > 0)
     throw new BriefError(`files are missing: ${missing.join(", ")}`);
   const size = wanted2.reduce((n, f) => n + files[f].length, 0);
   if (size > MAX_BRIEF_FILES)
     throw new BriefError(`affected files are ${size} characters, over the ${MAX_BRIEF_FILES} limit`);
-  const own = Object.fromEntries(wanted2.map((f) => [f, files[f]]));
-  const masking = maskFiles(own);
+  const own = Object.fromEntries(patch2.map((f) => [f, files[f]]));
+  const masking = maskFiles(Object.fromEntries(wanted2.map((f) => [f, files[f]])));
   const places3 = group3.events.flatMap((e) => e.matches.filter((m) => wanted2.includes(m.file)).map((m) => ({ file: m.file, line: m.line, version: e.version })));
   const data = JSON.stringify({
     provider: group3.provider,
@@ -223027,6 +223211,7 @@ var MAX_BRIEF_FILES, npmPackages, BriefError, SYSTEM;
 var init_brief = __esm({
   "packages/core/dist/src/patch/brief.js"() {
     "use strict";
+    init_src3();
     init_confidence();
     init_masking();
     MAX_BRIEF_FILES = 24e3;
@@ -223050,6 +223235,57 @@ var init_agent_task = __esm({
   "packages/core/dist/src/patch/agent-task.js"() {
     "use strict";
     init_brief();
+  }
+});
+
+// packages/core/dist/src/gates/config.js
+function isConfig(file) {
+  return isConfigFile(file);
+}
+function pieces(line3) {
+  return line3.match(PIECE) ?? [];
+}
+function lineError(before, after, to) {
+  const old = pieces(before);
+  const next = pieces(after);
+  if (old.length !== next.length)
+    return "changes more than model ids";
+  for (let i = 0; i < old.length; i++) {
+    if (old[i] === next[i])
+      continue;
+    const id = next[i];
+    if (!MODEL_ID.test(id) || id.includes("//") || !id.includes(to))
+      return "changes more than model ids";
+  }
+  return null;
+}
+function configError(brief, file, after) {
+  const before = brief.files[file].split("\n");
+  const next = after.split("\n");
+  if (before.length !== next.length)
+    return { reason: "changes the number of lines", line: 1 };
+  const matched = new Set(brief.group.events.flatMap((e) => e.matches.filter((m) => m.file === file).map((m) => m.line - 1)));
+  for (let i = 0; i < before.length; i++) {
+    if (before[i] === next[i])
+      continue;
+    if (!matched.has(i))
+      return {
+        reason: "edits a line that holds no matched model id",
+        line: i + 1
+      };
+    const reason = lineError(before[i], next[i], brief.group.to);
+    if (reason)
+      return { reason, line: i + 1 };
+  }
+  return null;
+}
+var PIECE, MODEL_ID;
+var init_config = __esm({
+  "packages/core/dist/src/gates/config.js"() {
+    "use strict";
+    init_src3();
+    PIECE = /[\w.:/-]+|[^\w.:/-]+/g;
+    MODEL_ID = /^[A-Za-z0-9][\w.:/-]{0,99}$/;
   }
 });
 
@@ -224968,6 +225204,10 @@ function fileError(brief, file, after) {
   const secret = secretError(brief, file, after);
   if (secret)
     return secret;
+  if (isConfig(file)) {
+    const config = configError(brief, file, after);
+    return config ? fail("config", config.reason, file, config.line) : null;
+  }
   const language = languageOf2(file);
   if (!language)
     return fail("language", "Upseam has no gates for this file type", file);
@@ -224996,6 +225236,7 @@ var init_gates = __esm({
   "packages/core/dist/src/gates/index.js"() {
     "use strict";
     init_secrets();
+    init_config();
     init_deletion();
     init_diff2();
     init_ends();
@@ -225080,7 +225321,7 @@ function modelSymbols(group3) {
 }
 function directReplacement(group3) {
   const named3 = (e) => e.retires !== void 0 && replacements(e).length === 1 && replacements(e)[0] === group3.to;
-  return MODEL_ID.test(group3.to) && group3.events.length > 0 && modelSymbols(group3).length > 0 && group3.needsHuman.length === 0 && Boolean(providers[group3.provider]?.versionless) && group3.events.every(named3);
+  return MODEL_ID2.test(group3.to) && group3.events.length > 0 && modelSymbols(group3).length > 0 && group3.needsHuman.length === 0 && Boolean(providers[group3.provider]?.versionless) && group3.events.every(named3);
 }
 function idPattern(group3) {
   const provider = providers[group3.provider];
@@ -225089,7 +225330,7 @@ function idPattern(group3) {
   return new RegExp(ids.join("|"), "g");
 }
 function placesOf(group3) {
-  const wanted2 = new Set(briefFiles(group3));
+  const wanted2 = new Set(patchFiles(group3));
   const places3 = /* @__PURE__ */ new Map();
   for (const match of group3.events.flatMap((e) => byConfidence(e.matches).high)) {
     if (!wanted2.has(match.file))
@@ -225098,6 +225339,9 @@ function placesOf(group3) {
     places3.set(match.file, lines3.add(match.line - 1));
   }
   return places3;
+}
+function replaceInConfig(row, pattern, to) {
+  return row.replace(CONFIG_TOKEN, (token) => `"${token}"`.replace(pattern, to).slice(1, -1));
 }
 function replaceModelIds(group3, files) {
   if (!directReplacement(group3))
@@ -225113,7 +225357,7 @@ function replaceModelIds(group3, files) {
       const row = rows3[index3];
       if (row === void 0)
         return null;
-      const next = row.replace(pattern, group3.to);
+      const next = isConfigFile(file) ? replaceInConfig(row, pattern, group3.to) : row.replace(pattern, group3.to);
       if (next === row)
         return null;
       rows3[index3] = next;
@@ -225122,16 +225366,18 @@ function replaceModelIds(group3, files) {
   }
   return Object.keys(changed2).length > 0 ? changed2 : null;
 }
-var MODEL_ID;
+var CONFIG_TOKEN, MODEL_ID2;
 var init_replace = __esm({
   "packages/core/dist/src/match/replace.js"() {
     "use strict";
     init_src4();
+    init_src3();
     init_capability();
     init_brief();
     init_confidence();
     init_search();
-    MODEL_ID = /^[A-Za-z0-9][\w.:/-]{0,99}$/;
+    CONFIG_TOKEN = /[A-Za-z0-9][\w.:/-]*/g;
+    MODEL_ID2 = /^[A-Za-z0-9][\w.:/-]{0,99}$/;
   }
 });
 
@@ -233611,11 +233857,21 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname as dirname2, join as join9 } from "node:path";
+function configNote(file, before, after) {
+  const next = after.split("\n");
+  const lines3 = before.split("\n").flatMap((line3, i) => line3 === next[i] ? [] : [i + 1]);
+  return `${file}: model ids replaced on line ${lines3.join(", ")}; the line text is not printed
+`;
+}
 function diff2(brief, changed2) {
   const dir = mkdtempSync(join9(tmpdir(), "upseam-diff-"));
   try {
     const out = [];
     for (const [file, content3] of Object.entries(changed2)) {
+      if (isConfigFile(file)) {
+        out.push(configNote(file, brief.files[file], content3));
+        continue;
+      }
       for (const [side2, text4] of [
         ["a", brief.files[file]],
         ["b", content3]
@@ -233690,6 +233946,7 @@ var init_text3 = __esm({
     "use strict";
     init_src4();
     init_src5();
+    init_src3();
     init_clean();
     init_brief2();
   }
@@ -234113,7 +234370,7 @@ function directJob(root, group3, repo) {
   let files;
   let gate;
   try {
-    files = readFiles(root, briefFiles(group3));
+    files = readFiles(root, patchFiles(group3));
     gate = buildBrief(group3, files, {});
   } catch (error) {
     if (error instanceof BriefError)
@@ -234466,7 +234723,7 @@ async function generateGroup(opts) {
   }
   let brief;
   try {
-    brief = buildBrief(group3, readFiles(root, briefFiles(group3)), {}, npmPackages(providers[group3.provider]));
+    brief = buildBrief(group3, readFiles(root, patchFiles(group3)), {}, npmPackages(providers[group3.provider]));
   } catch (error) {
     if (!(error instanceof BriefError))
       throw error;
@@ -235085,7 +235342,7 @@ var init_progress = __esm({
 import { readFileSync as readFileSync11, statSync as statSync5 } from "node:fs";
 import { relative as relative3, resolve as resolve9 } from "node:path";
 async function readWithProgress(root, progress) {
-  const { files, unread } = walkFiles(root);
+  const { files, configs, unread } = walkFiles(root);
   const sources2 = [];
   let large = 0;
   const step = (done, force = false) => progress.update({
@@ -235114,7 +235371,11 @@ async function readWithProgress(root, progress) {
       await tick();
   }
   step(files.length, true);
-  return { sources: sources2, unread: { ...unread, large } };
+  return {
+    sources: sources2,
+    configs: readAll(root, configs).sources,
+    unread: { ...unread, large }
+  };
 }
 async function scan(path2, list4, progress) {
   const root = resolve9(path2);
@@ -235151,10 +235412,15 @@ async function scan(path2, list4, progress) {
   }
   if (found.length === 0)
     return { tree: directoryTree(root), changes };
-  const { sources: sources2, unread } = await readWithProgress(root, progress);
+  const { sources: sources2, configs, unread } = await readWithProgress(root, progress);
   progress.update({ label: "match", stage: "matches" }, true);
   return {
-    tree: { root, sources: () => sources2, unread: () => unread },
+    tree: {
+      root,
+      sources: () => sources2,
+      configs: () => configs,
+      unread: () => unread
+    },
     changes
   };
 }
@@ -235353,7 +235619,7 @@ var init_package = __esm({
   "packages/cli/dist/package.json"() {
     package_default = {
       name: "@upseam/cli",
-      version: "0.6.0",
+      version: "0.6.1",
       description: "Finds external API changes that affect a repository: SDK, pinned API version, changes since, matched code",
       license: "MIT",
       type: "module",
@@ -237137,7 +237403,7 @@ function configText(answers) {
 function expression(value2) {
   return value2.includes("${{");
 }
-function configError(answers) {
+function configError2(answers) {
   try {
     configText(answers);
     return null;
@@ -237648,7 +237914,7 @@ var init_ask = __esm({
     items = (reply) => reply.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean);
     valid = (build) => (reply) => {
       const list4 = items(reply);
-      const error = list4.length ? configError(build(list4)) : null;
+      const error = list4.length ? configError2(build(list4)) : null;
       return error ? { error: `${error}. Try again.` } : { value: list4 };
     };
     plain4 = (reply) => expression(reply) ? { error: "The value must not contain ${{. Try again." } : { value: reply };
